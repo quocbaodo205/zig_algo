@@ -4,7 +4,8 @@ const std = @import("std");
 // Import all other stuff for test run
 comptime {
     _ = @import("ds.zig");
-    // And all other files
+    _ = @import("string.zig");
+    _ = @import("segment_tree.zig");
 }
 
 pub fn bufferedPrint() !void {
