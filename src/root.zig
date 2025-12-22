@@ -6,6 +6,7 @@ comptime {
     _ = @import("ds.zig");
     _ = @import("string.zig");
     _ = @import("segment_tree.zig");
+    _ = @import("graph.zig");
 }
 
 pub fn bufferedPrint() !void {
