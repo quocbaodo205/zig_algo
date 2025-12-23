@@ -153,4 +153,53 @@ pub fn build(b: *std.Build) void {
     //
     // Lastly, the Zig build system is relatively simple and self-contained,
     // and reading its source code will allow you to master it.
+
+    // Write step (actually live inside the build cache)
+    _ = bundle();
+    const write_file = b.addWriteFiles();
+    // _ = write_file.add("bundle.zig", bundle());
+
+    const bundle_step = b.step("bundle", "Bundle source into 1 file bundle.zig");
+    bundle_step.dependOn(&write_file.step);
+}
+
+/// Main bundling function: read all needed files and write to output.
+pub fn bundle() []const u8 {
+    // Step 1: Open the file.
+    var read_buffer: [1024]u8 = undefined;
+    var file = std.fs.cwd().openFile("src/main.zig", .{ .mode = .read_only }) catch unreachable;
+    var reader = file.reader(&read_buffer);
+
+    // Step 2: Build the import DAG (ignore std ofc, std is always on top).
+    while (true) {
+        const line = reader.interface.takeDelimiterExclusive('\n') catch |err| {
+            switch (err) {
+                error.EndOfStream => {
+                    break;
+                },
+                else => {
+                    @panic("wew");
+                },
+            }
+        };
+        if (std.mem.containsAtLeast(u8, line, 1, "const std")) {
+            // Ignore std line.
+            // writer.interface.print("{s}\n", .{line});
+        } else {
+            if (line.len == 0) {
+                // No more import!
+                break;
+            }
+            std.debug.print("{s}\n", .{line});
+        }
+    }
+
+    // Step 2: Prepare a file writer
+    var write_buffer: [1024]u8 = undefined;
+    var wf = std.fs.cwd().createFile("bundle.zig", .{ .truncate = true }) catch unreachable;
+    const writer = wf.writer(&write_buffer);
+    _ = writer;
+
+    // Last step: write file to disk
+    return "Done";
 }
