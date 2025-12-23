@@ -3,17 +3,64 @@ const Io = std.Io;
 
 // Some constant buffer and pre-allocation
 const buffer_limit = 20000000;
-var inbuf: [buffer_limit]u8 = undefined;
+
 var fbuffer: [buffer_limit]u8 = undefined;
 var fba = std.heap.FixedBufferAllocator.init(&fbuffer);
-const fal = fba.allocator();
 
-// Writer allocation
-var stdout_buffer: [1024]u8 = undefined;
-var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-const writer = &stdout_writer.interface;
+pub fn solve() !void {
+    var arena = std.heap.ArenaAllocator.init(fba.allocator());
+    defer arena.deinit();
+    const al = fba.allocator();
+
+    // =================== Solve the problem =====================
+    const n = in.read(usize);
+    const q = in.read(usize);
+    const a = in.readArrayList(n, i64, al);
+
+    // Expression for range l..=r can be calculated as:
+    // sum j in [l..=r] | -j^2*a[j] + (l+r)*j*a[j] + (1-l)*(r+1)*a[j].
+    // We can store prefix sum for i^2*a[i], i*a[i], a[i] (1 based).
+    var psum_i2: [300001]i64 = @splat(0);
+    for (0..n) |i| {
+        psum_i2[i + 1] = psum_i2[i] + @as(i64, @intCast(i + 1)) * @as(i64, @intCast(i + 1)) * a.items[i];
+    }
+
+    var psum_i: [300001]i64 = @splat(0);
+    for (0..n) |i| {
+        psum_i[i + 1] = psum_i[i] + @as(i64, @intCast(i + 1)) * a.items[i];
+    }
+
+    var psum: [300001]i64 = @splat(0);
+    for (0..n) |i| {
+        psum[i + 1] = psum[i] + a.items[i];
+    }
+
+    for (0..q) |_| {
+        const l = in.read(usize);
+        const r = in.read(usize);
+        const li: i64 = @intCast(l);
+        const ri: i64 = @intCast(r);
+        const p2 = psum_i2[r] - psum_i2[l - 1]; // sum j^2*a[j]
+        const p1 = psum_i[r] - psum_i[l - 1]; // sum j*a[j]
+        const p = psum[r] - psum[l - 1]; // sum a[j]
+        const ans: i64 = -p2 + (li + ri) * p1 + (1 - li) * (ri + 1) * p;
+        print("{}\n", .{ans});
+    }
+}
+
+pub fn main() !void {
+    // Init the input + read all the content
+    // const t = in.read(usize);
+    // for (0..t) |_| {
+    try solve();
+    // }
+    try writer.flush(); // Ending flush
+}
+
+// ================================ Utils ===============================
 
 /// Position of the first index i, so that arr[i] >= x
+/// Sort first: std.mem.sort(u32, a.items, {}, comptime std.sort.asc(u32));
 pub fn lowerBoundPos(comptime T: type, arr: []const T, x: T) ?usize {
     var l: usize = 0;
     var r = arr.len - 1;
@@ -36,48 +83,14 @@ pub fn lowerBoundPos(comptime T: type, arr: []const T, x: T) ?usize {
     return ans;
 }
 
-pub fn main() !void {
-    // Init the input + read all the content
-    var in = CPInput.init();
-    const n = in.read(u32);
-    const m = in.read(u32);
-    const a = in.readArrayList(n, u32, fal);
-    const b = in.readArrayList(m, u32, fal);
-    std.mem.sort(u32, a.items, {}, comptime std.sort.asc(u32));
-    std.mem.sort(u32, b.items, {}, comptime std.sort.asc(u32));
-    // Prefix sum a
-    var presum_a = try std.ArrayList(u64).initCapacity(fal, n);
-    for (0..n) |i| {
-        const x = a.items[i] + if (i == 0)
-            0
-        else
-            presum_a.items[i - 1];
-        try presum_a.append(fal, x);
-    }
+// ================================ IO ============================
 
-    var ans: u64 = 0;
-    for (b.items) |x| {
-        const lpos = lowerBoundPos(u32, a.items, x);
-        if (lpos) |lpv| {
-            if (lpv > 0) {
-                ans += @as(u64, x) * lpv - presum_a.items[lpv - 1];
-            }
-            // Upper bound
-            const rpos = lowerBoundPos(u32, a.items, x + 1);
-            if (rpos) |rpv| {
-                // Need sum from rpos..
-                ans += (presum_a.items[n - 1] - if (rpv == 0) 0 else presum_a.items[rpv - 1]) - @as(u64, x) * (n - rpv);
-            }
-        } else {
-            // All a is < x, then diff is only x * n - presum;
-            ans += @as(u64, x) * n - presum_a.items[n - 1];
-        }
-        ans %= 998244353;
-    }
-    print("{}\n", .{ans});
-
-    try writer.flush(); // Ending flush
-}
+// Definition for IO: Buffer and writer
+var in = CPInput.init();
+var inbuf: [buffer_limit]u8 = undefined;
+var stdout_buffer: [1024]u8 = undefined;
+var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+const writer = &stdout_writer.interface;
 
 /// Output print that ignore errors to type faster
 pub fn print(comptime fmt: []const u8, args: anytype) void {

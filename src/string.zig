@@ -7,7 +7,6 @@ pub fn Trie(
     child_num: comptime_int,
     norm: comptime_int,
     T: anytype,
-    alloc: std.mem.Allocator,
 ) type {
     const TrieNode = struct {
         const Self = @This();
@@ -29,7 +28,9 @@ pub fn Trie(
 
         const Self = @This();
 
-        pub fn new() !Self {
+        pub fn new(
+            alloc: std.mem.Allocator,
+        ) !Self {
             const head_ptr = try alloc.create(TrieNode);
             head_ptr.* = TrieNode.new();
             return Self{
@@ -71,7 +72,7 @@ pub fn Trie(
 }
 
 /// Prefix trie node support count how many with this prefix and is full string
-const PrefixTrieNodeType = struct {
+pub const PrefixTrieNodeType = struct {
     is_full_str: bool,
     prefix_count: u32,
 
@@ -90,8 +91,31 @@ const PrefixTrieNodeType = struct {
     }
 };
 
+/// Assign each string with a unique hash (incremental counter).
+/// You will have to manage the usize -> string mapping elsewhere.
+pub const UniqueHashTrieNodeType = struct {
+    var counter: usize = 0; // Global incremental counter
+
+    value: usize,
+
+    const Self = @This();
+
+    pub fn init() Self {
+        return Self{
+            .value = 0,
+        };
+    }
+
+    pub fn add(self: *Self, is_end: bool) void {
+        if (is_end) {
+            self.value = counter;
+            counter += 1;
+        }
+    }
+};
+
 test "Trie test" {
-    var trie = try Trie(26, 'a', PrefixTrieNodeType, std.heap.page_allocator).new();
+    var trie = try Trie(26, 'a', PrefixTrieNodeType).new(std.heap.page_allocator);
     try trie.add("abcd");
     var res = trie.get("ab");
     try std.testing.expect(res[0].is_full_str == false);

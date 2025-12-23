@@ -10,6 +10,7 @@ pub fn Deque(comptime T: type, max_n: comptime_int) type {
         // [l..r)
         l: usize,
         r: usize,
+        len: usize,
 
         const Self = @This();
 
@@ -19,6 +20,7 @@ pub fn Deque(comptime T: type, max_n: comptime_int) type {
                 .arr = [_]?T{null} ** max_n,
                 .l = 0,
                 .r = 0,
+                .len = 0,
             };
         }
 
@@ -42,6 +44,7 @@ pub fn Deque(comptime T: type, max_n: comptime_int) type {
             }
             self.arr[self.r] = element.*; // Deref to copy inside
             self.r += 1;
+            self.len += 1;
             if (self.r >= max_n) self.r = 0;
         }
 
@@ -58,6 +61,7 @@ pub fn Deque(comptime T: type, max_n: comptime_int) type {
             const pop_data = self.arr[new_r].?;
             self.arr[new_r] = null;
             self.r = new_r;
+            self.len -= 1;
             return pop_data;
         }
 
@@ -73,6 +77,7 @@ pub fn Deque(comptime T: type, max_n: comptime_int) type {
             }
             self.arr[new_l] = element.*; // Deref to copy inside
             self.l = new_l;
+            self.len += 1;
         }
 
         /// Pop return and element from the front of the deque
@@ -83,6 +88,7 @@ pub fn Deque(comptime T: type, max_n: comptime_int) type {
             }
             const pop_data = self.arr[self.l].?;
             self.arr[self.l] = null;
+            self.len -= 1;
             self.l += 1;
             if (self.l >= max_n) {
                 self.l = 0;
