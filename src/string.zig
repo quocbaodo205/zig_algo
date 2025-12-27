@@ -38,7 +38,7 @@ pub fn Trie(
             return self;
         }
 
-        pub fn add(self: *Self, data: []const u8) void {
+        pub fn add(self: *Self, data: []const u8) bool {
             var cur_node = self.head;
             for (data) |c| {
                 const cc = c - norm;
@@ -48,10 +48,12 @@ pub fn Trie(
                     cur_node.children[cc] = new_ptr;
                 }
                 // Value combine with add with is_end as a boolean
-                cur_node.val.add(false); // Process the current node
+                if (!cur_node.val.add(false)) {
+                    return false;
+                }
                 cur_node = cur_node.children[cc].?;
             }
-            cur_node.val.add(true); // Process the last missing node
+            return cur_node.val.add(true); // Process the last missing node
         }
 
         /// Return the value and the size in data that we gone through,
@@ -94,9 +96,10 @@ pub const PrefixTrieNodeType = struct {
         };
     }
 
-    pub fn add(self: *Self, is_end: bool) void {
+    pub fn add(self: *Self, is_end: bool) bool {
         self.prefix_count += 1;
         self.is_full_str |= is_end;
+        return true;
     }
 };
 
@@ -115,11 +118,16 @@ pub const UniqueHashTrieNodeType = struct {
         };
     }
 
-    pub fn add(self: *Self, is_end: bool) void {
-        if (is_end) {
+    pub fn add(self: *Self, is_end: bool) bool {
+        if (!is_end) {
+            return true; // Doesn't do anything...
+        }
+        if (self.value == 0) {
             self.value = counter;
             counter += 1;
+            return true;
         }
+        return false;
     }
 };
 

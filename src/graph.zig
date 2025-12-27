@@ -1,6 +1,7 @@
 const std = @import("std");
 const allocator = @import("allocator.zig");
-const dq = @import("ds.zig");
+const ds = @import("ds.zig");
+const string = @import("string.zig"); // Use for string graph only
 
 /// Graph with dynamic node type. Underline is an adj list of usize.
 /// If node type is of Int, directly store inside the [n]ArrayList.
@@ -9,14 +10,14 @@ const dq = @import("ds.zig");
 pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_int, is_bidirectional: comptime_int) type {
     return struct {
         // Data structure for outside edge: an edge from u -w> v
-        const E = struct {
+        pub const E = struct {
             u: node_type,
             v: node_type,
             w: weight_type,
         };
 
         // Data structure for a graph edge
-        const GE = struct {
+        pub const GE = struct {
             v: usize,
             w: weight_type,
         };
@@ -102,11 +103,11 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
             return struct {
                 pub var used: [n]bool = @splat(false);
 
-                pub fn dfs(u: usize, graph: *const Self) void {
+                pub fn dfs(u: usize, g: *const Self) void {
                     used[u] = true;
-                    for (graph.get(u)) |*ge| {
+                    for (g.get(u)) |*ge| {
                         if (!used[ge.v]) {
-                            dfs(ge.v, graph);
+                            dfs(ge.v, g);
                         }
                     }
                 }
@@ -116,11 +117,11 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
         /// Minimal BFS from starting vertices. Create a BFS struct that contains needed infomation.
         pub fn makeBFS() type {
             return struct {
-                var q = dq.Deque(usize, n * 10).new();
+                var q = ds.Deque(usize, n * 10).new();
                 var in_queue: [n]bool = @splat(false);
                 var distance: [n]u32 = @splat(1000000000);
 
-                fn bfs(starts: []const usize, graph: *const Self) void {
+                fn bfs(starts: []const usize, g: *const Self) void {
                     for (starts) |u| {
                         q.push_back(&u);
                         distance[u] = 0;
@@ -128,7 +129,7 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
                     }
                     while (true) {
                         if (q.pop_front()) |u| {
-                            for (graph.get(u)) |*ge| {
+                            for (g.get(u)) |*ge| {
                                 if (in_queue[ge.v]) {
                                     continue;
                                 }
@@ -152,16 +153,16 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
                 pub var order: [n]usize = undefined;
                 pub var size: usize = 0;
 
-                fn dfs(u: usize, graph: *const Self) bool {
+                fn dfs(u: usize, g: *const Self) bool {
                     state[u] = 1;
-                    for (graph.get(u)) |*ge| {
+                    for (g.get(u)) |*ge| {
                         if (state[ge.v] == 1) {
                             // Loop found
                             return false;
                         }
                         if (state[ge.v] == 0) {
                             // New vertext
-                            const child_dfs_res = dfs(ge.v, graph);
+                            const child_dfs_res = dfs(ge.v, g);
                             if (!child_dfs_res) {
                                 return false;
                             }
@@ -175,10 +176,10 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
 
                 /// Recursively get the topological order.
                 /// The `order` is the reverse order.
-                pub fn getTopoOrder(graph: *const Self) bool {
+                pub fn getTopoOrder(g: *const Self) bool {
                     for (0..n) |u| {
                         if (state[u] == 0) {
-                            const dfs_res = dfs(u, graph);
+                            const dfs_res = dfs(u, g);
                             if (!dfs_res) {
                                 return false;
                             }
@@ -217,13 +218,14 @@ pub fn GridPoint(m: comptime_int) type {
 
 /// Simple string hashing via counting with Trie.
 /// To use, first you need to add all needed strings.
-const StringVertices = struct {
-    const string = @import("string.zig");
-    const trie_type = string.Trie(26, 'a', string.UniqueHashTrieNodeType);
+pub const StringVertices = struct {
+    const uth = string.UniqueHashTrieNodeType;
+    const trie_type = string.Trie(128, 0, uth);
 
-    all_str: std.ArrayList([]const u8), // Mapping from pos to string
+    all_str: [1000][]const u8, // Mapping from pos to string
     trie: trie_type,
     al: allocator.BumpAllo(0, []const u8),
+    cur_mx: usize,
 
     const Self = @This();
 
@@ -247,8 +249,9 @@ const StringVertices = struct {
             .al = .init(),
             .all_str = undefined,
             .trie = trie_type.new(),
+            .cur_mx = 0,
         };
-        self.all_str = std.ArrayList([]const u8).initCapacity(self.al.allocator(), 10) catch unreachable;
+        self.all_str = undefined;
 
         return self;
     }
@@ -261,13 +264,17 @@ const StringVertices = struct {
     }
 
     pub fn add(self: *Self, data: []const u8) void {
-        self.all_str.append(self.al.allocator(), data) catch unreachable;
-        self.trie.add(data);
+        if (self.trie.add(data)) {
+            const v = self.trie.get(data)[0].value;
+            self.all_str[v] = data;
+            self.cur_mx = v + 1;
+        }
     }
 
     pub fn unhash(self: *const Self, u: usize) StringVertex {
         return StringVertex{
-            .str = self.all_str.items[u],
+            .str = self.all_str[u],
+            .parent = undefined, // No need
         };
     }
 
