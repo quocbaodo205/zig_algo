@@ -1,11 +1,10 @@
 /// String data structures and algorithm in zig.
 const std = @import("std");
+const allocator = @import("allocator.zig");
 
-/// Trie, dynamic allocated with an allocator.
-/// Anything pointer needs to be allocated.
 pub fn Trie(
     child_num: comptime_int,
-    norm: comptime_int,
+    norm: comptime_int, // First char to normalize to 0
     T: anytype,
 ) type {
     const TrieNode = struct {
@@ -24,19 +23,19 @@ pub fn Trie(
 
     return struct {
         head: *TrieNode,
-        alloc: std.mem.Allocator,
+        // TODO: Figure out the allocation needed.
+        al: allocator.BumpAllo(child_num * 1000, TrieNode),
 
         const Self = @This();
 
-        pub fn new(
-            alloc: std.mem.Allocator,
-        ) !Self {
-            const head_ptr = try alloc.create(TrieNode);
-            head_ptr.* = TrieNode.new();
-            return Self{
-                .alloc = alloc,
-                .head = head_ptr,
+        pub fn new() !Self {
+            var self = Self{
+                .head = undefined,
+                .al = .init(),
             };
+            self.head = self.al.create();
+            self.head.* = TrieNode.new();
+            return self;
         }
 
         pub fn add(self: *Self, data: []const u8) !void {
@@ -44,7 +43,7 @@ pub fn Trie(
             for (data) |c| {
                 const cc = c - norm;
                 if (cur_node.children[cc] == null) {
-                    const new_ptr = try self.alloc.create(TrieNode);
+                    const new_ptr = self.al.create();
                     new_ptr.* = TrieNode.new();
                     cur_node.children[cc] = new_ptr;
                 }
@@ -67,6 +66,10 @@ pub fn Trie(
                 cur_node = cur_node.children[cc].?;
             }
             return .{ cur_node.val, data.len - 1 };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.al.deinit();
         }
     };
 }
@@ -115,7 +118,7 @@ pub const UniqueHashTrieNodeType = struct {
 };
 
 test "Trie test" {
-    var trie = try Trie(26, 'a', PrefixTrieNodeType).new(std.heap.page_allocator);
+    var trie = try Trie(26, 'a', PrefixTrieNodeType).new();
     try trie.add("abcd");
     var res = trie.get("ab");
     try std.testing.expect(res[0].is_full_str == false);

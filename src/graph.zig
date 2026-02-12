@@ -108,7 +108,7 @@ pub fn GridPoint(max_col: comptime_int) type {
 /// Simple string hashing via counting with Trie
 const StringVertices = struct {
     const string = @import("string.zig");
-    const trie_type = string.Trie(128, 0, string.UniqueHashTrieNodeType);
+    const trie_type = string.Trie(26, 'a', string.UniqueHashTrieNodeType);
 
     all_str: std.ArrayList([]const u8),
     trie: trie_type,
@@ -134,7 +134,7 @@ const StringVertices = struct {
     pub fn new(al: std.mem.Allocator) Self {
         return Self{
             .all_str = std.ArrayList([]const u8).initCapacity(al, 10) catch unreachable,
-            .trie = trie_type.new(al) catch unreachable,
+            .trie = trie_type.new() catch unreachable,
             .allocator = al,
         };
     }
@@ -156,13 +156,17 @@ const StringVertices = struct {
             .str = self.all_str.items[u],
         };
     }
+
+    pub fn deinit(self: *Self) void {
+        self.trie.deinit();
+    }
 };
 
 // =============================== Usage as test =======================
 
 test "Test graph usize" {
     // Allocator stuff
-    var buffer: [10000000]u8 = undefined;
+    var buffer: [10000]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     var arena = std.heap.ArenaAllocator.init(fba.allocator());
     defer arena.deinit();
@@ -294,7 +298,7 @@ test "Test graph usize" {
 
 test "Test graph grid" {
     // Allocator stuff
-    var buffer: [10000000]u8 = undefined;
+    var buffer: [10000]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     var arena = std.heap.ArenaAllocator.init(fba.allocator());
     defer arena.deinit();
@@ -401,33 +405,33 @@ test "Test graph grid" {
 
 test "Test graph string" {
     // Allocator stuff
-    var buffer: [10000000]u8 = undefined;
+    var buffer: [100000]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     var arena = std.heap.ArenaAllocator.init(fba.allocator());
     defer arena.deinit();
     const allocator = arena.allocator();
 
     var str_v = StringVertices.new(std.heap.page_allocator);
-    str_v.add("v1");
-    str_v.add("v2");
-    str_v.add("v3");
+    str_v.add("a");
+    str_v.add("b");
+    str_v.add("c");
     const node_type = StringVertices.StringVertex;
     const gtype = Graph(node_type, void, 10, 0);
     const E = gtype.E;
     var edges: [3]E = undefined;
     edges[0] = E{
-        .u = str_v.newStrV("v1"),
-        .v = str_v.newStrV("v2"),
+        .u = str_v.newStrV("a"),
+        .v = str_v.newStrV("b"),
         .w = undefined,
     };
     edges[1] = E{
-        .u = str_v.newStrV("v2"),
-        .v = str_v.newStrV("v3"),
+        .u = str_v.newStrV("b"),
+        .v = str_v.newStrV("c"),
         .w = undefined,
     };
     edges[2] = E{
-        .u = str_v.newStrV("v3"),
-        .v = str_v.newStrV("v1"),
+        .u = str_v.newStrV("c"),
+        .v = str_v.newStrV("a"),
         .w = undefined,
     };
     const g = gtype.fromEdgesUnweighted(&edges, allocator);

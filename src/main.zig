@@ -1,8 +1,9 @@
 const std = @import("std");
 const Io = std.Io;
+const string = @import("string.zig");
 
 // Some constant buffer and pre-allocation
-const buffer_limit = 20000000;
+const buffer_limit = 1000000;
 
 var fbuffer: [buffer_limit]u8 = undefined;
 var fba = std.heap.FixedBufferAllocator.init(&fbuffer);
