@@ -1,39 +1,34 @@
 const std = @import("std");
-const Io = std.Io;
 const string = @import("string.zig");
+const allocator = @import("allocator.zig");
 
-// Some constant buffer and pre-allocation
-const buffer_limit = 1000000;
+// ===================== Solving =====================
 
-var fbuffer: [buffer_limit]u8 = undefined;
-var fba = std.heap.FixedBufferAllocator.init(&fbuffer);
+// Static allocations for array inputs
+const max_n = 30010;
+var a: [max_n]i64 = undefined;
 
 pub fn solve() !void {
-    var arena = std.heap.ArenaAllocator.init(fba.allocator());
-    defer arena.deinit();
-    const al = fba.allocator();
-
-    // =================== Solve the problem =====================
     const n = in.read(usize);
     const q = in.read(usize);
-    const a = in.readArrayList(n, i64, al);
+    in.readBuffer(i64, a[0..n]);
 
     // Expression for range l..=r can be calculated as:
     // sum j in [l..=r] | -j^2*a[j] + (l+r)*j*a[j] + (1-l)*(r+1)*a[j].
     // We can store prefix sum for i^2*a[i], i*a[i], a[i] (1 based).
-    var psum_i2: [300001]i64 = @splat(0);
+    var psum_i2: [max_n]i64 = @splat(0);
     for (0..n) |i| {
-        psum_i2[i + 1] = psum_i2[i] + @as(i64, @intCast(i + 1)) * @as(i64, @intCast(i + 1)) * a.items[i];
+        psum_i2[i + 1] = psum_i2[i] + @as(i64, @intCast(i + 1)) * @as(i64, @intCast(i + 1)) * a[i];
     }
 
-    var psum_i: [300001]i64 = @splat(0);
+    var psum_i: [max_n]i64 = @splat(0);
     for (0..n) |i| {
-        psum_i[i + 1] = psum_i[i] + @as(i64, @intCast(i + 1)) * a.items[i];
+        psum_i[i + 1] = psum_i[i] + @as(i64, @intCast(i + 1)) * a[i];
     }
 
-    var psum: [300001]i64 = @splat(0);
+    var psum: [max_n]i64 = @splat(0);
     for (0..n) |i| {
-        psum[i + 1] = psum[i] + a.items[i];
+        psum[i + 1] = psum[i] + a[i];
     }
 
     for (0..q) |_| {
@@ -50,46 +45,29 @@ pub fn solve() !void {
 }
 
 pub fn main() !void {
-    // Init the input + read all the content
+    // Support test cases reading.
     // const t = in.read(usize);
     // for (0..t) |_| {
     try solve();
     // }
     try writer.flush(); // Ending flush
+    allocator.arena.deinit(); // Always deinit at the end.
 }
 
 // ================================ Utils ===============================
 
+// Sorting instruction:
+
 /// Position of the first index i, so that arr[i] >= x
 /// Sort first: std.mem.sort(u32, a.items, {}, comptime std.sort.asc(u32));
-pub fn lowerBoundPos(comptime T: type, arr: []const T, x: T) ?usize {
-    var l: usize = 0;
-    var r = arr.len - 1;
-    var ans = arr.len;
-    while (l <= r) {
-        const mid = (l + r) / 2;
-        if (arr[mid] >= x) {
-            ans = mid;
-            if (mid == 0) {
-                break;
-            }
-            r = mid - 1;
-        } else {
-            l = mid + 1;
-        }
-    }
-    if (ans == arr.len) {
-        return null;
-    }
-    return ans;
-}
+/// std.sort.lowerBound(u32, a.items, 3, comptime std.sort.asc(u32));
 
 // ================================ IO ============================
 
 // Definition for IO: Buffer and writer
 var in = CPInput.init();
-var inbuf: [buffer_limit]u8 = undefined;
-var stdout_buffer: [1024]u8 = undefined;
+var inbuf: [1 << 12]u8 = undefined;
+var stdout_buffer: [1 << 12]u8 = undefined;
 var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
 const writer = &stdout_writer.interface;
 
@@ -148,6 +126,7 @@ const CPInput = struct {
         // Process the correct function for each type
         switch (@typeInfo(T)) {
             .int => {
+                @branchHint(.likely);
                 return std.fmt.parseInt(T, data, 10) catch unreachable;
             },
             .float => {
@@ -159,26 +138,25 @@ const CPInput = struct {
         }
     }
 
-    pub fn readArrayList(self: *Self, n: usize, comptime T: type, allocator: std.mem.Allocator) std.ArrayList(T) {
-        var arr = std.ArrayList(T).initCapacity(allocator, n) catch unreachable;
+    pub fn readBuffer(self: *Self, comptime T: type, arr_buffer: []T) void {
         // Process the correct function for each type
         switch (@typeInfo(T)) {
             .int => {
-                for (0..n) |_| {
+                @branchHint(.likely);
+                for (0..arr_buffer.len) |i| {
                     const data = self.take();
-                    arr.append(allocator, std.fmt.parseInt(T, data, 10) catch unreachable) catch unreachable;
+                    arr_buffer[i] = std.fmt.parseInt(T, data, 10) catch unreachable;
                 }
             },
             .float => {
-                for (0..n) |_| {
+                for (0..arr_buffer.len) |i| {
                     const data = self.take();
-                    arr.append(allocator, std.fmt.parseFloat(T, data) catch unreachable) catch unreachable;
+                    arr_buffer[i] = std.fmt.parseFloat(T, data, 10) catch unreachable;
                 }
             },
             else => {
                 @panic("Type not supported");
             },
         }
-        return arr;
     }
 };

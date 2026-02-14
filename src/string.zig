@@ -2,6 +2,7 @@
 const std = @import("std");
 const allocator = @import("allocator.zig");
 
+/// Allocator: ContBumpAllo of 500 elements.
 pub fn Trie(
     child_num: comptime_int,
     norm: comptime_int, // First char to normalize to 0
@@ -23,8 +24,7 @@ pub fn Trie(
 
     return struct {
         head: *TrieNode,
-        // TODO: Figure out the allocation needed.
-        al: allocator.BumpAllo(child_num * 1000, TrieNode),
+        al: allocator.ContBumpAllo(500, TrieNode),
 
         const Self = @This();
 
@@ -33,7 +33,7 @@ pub fn Trie(
                 .head = undefined,
                 .al = .init(),
             };
-            self.head = self.al.create();
+            self.head = try self.al.create();
             self.head.* = TrieNode.new();
             return self;
         }
@@ -43,7 +43,7 @@ pub fn Trie(
             for (data) |c| {
                 const cc = c - norm;
                 if (cur_node.children[cc] == null) {
-                    const new_ptr = self.al.create();
+                    const new_ptr = try self.al.create();
                     new_ptr.* = TrieNode.new();
                     cur_node.children[cc] = new_ptr;
                 }
@@ -119,6 +119,7 @@ pub const UniqueHashTrieNodeType = struct {
 
 test "Trie test" {
     var trie = try Trie(26, 'a', PrefixTrieNodeType).new();
+    defer trie.deinit();
     try trie.add("abcd");
     var res = trie.get("ab");
     try std.testing.expect(res[0].is_full_str == false);
