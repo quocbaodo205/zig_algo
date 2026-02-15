@@ -2,7 +2,7 @@
 const std = @import("std");
 const allocator = @import("allocator.zig");
 
-/// Allocator: ContBumpAllo of 500 elements.
+/// Allocator: Heap + arena since we don't know how many things.
 pub fn Trie(
     child_num: comptime_int,
     norm: comptime_int, // First char to normalize to 0
@@ -24,26 +24,26 @@ pub fn Trie(
 
     return struct {
         head: *TrieNode,
-        al: allocator.ContBumpAllo(500, TrieNode),
+        al: allocator.BumpAllo(0, TrieNode),
 
         const Self = @This();
 
-        pub fn new() !Self {
+        pub fn new() Self {
             var self = Self{
                 .head = undefined,
                 .al = .init(),
             };
-            self.head = try self.al.create();
+            self.head = self.al.create() catch unreachable;
             self.head.* = TrieNode.new();
             return self;
         }
 
-        pub fn add(self: *Self, data: []const u8) !void {
+        pub fn add(self: *Self, data: []const u8) void {
             var cur_node = self.head;
             for (data) |c| {
                 const cc = c - norm;
                 if (cur_node.children[cc] == null) {
-                    const new_ptr = try self.al.create();
+                    const new_ptr = self.al.create() catch unreachable;
                     new_ptr.* = TrieNode.new();
                     cur_node.children[cc] = new_ptr;
                 }
@@ -54,8 +54,9 @@ pub fn Trie(
             cur_node.val.add(true); // Process the last missing node
         }
 
-        /// Return the value and the index in data that we gone through,
+        /// Return the value and the size in data that we gone through,
         /// since we might not gone through the whole data.
+        /// The last index is size - 1.
         pub fn get(self: Self, data: []const u8) struct { T, usize } {
             var cur_node = self.head;
             for (data, 0..) |c, i| {
@@ -66,6 +67,11 @@ pub fn Trie(
                 cur_node = cur_node.children[cc].?;
             }
             return .{ cur_node.val, data.len - 1 };
+        }
+
+        pub fn reset(self: *Self) void {
+            self.al.reset();
+            self.head = self.al.create() catch unreachable;
         }
 
         pub fn deinit(self: *Self) void {
@@ -118,15 +124,15 @@ pub const UniqueHashTrieNodeType = struct {
 };
 
 test "Trie test" {
-    var trie = try Trie(26, 'a', PrefixTrieNodeType).new();
+    var trie = Trie(26, 'a', PrefixTrieNodeType).new();
     defer trie.deinit();
-    try trie.add("abcd");
+    trie.add("abcd");
     var res = trie.get("ab");
     try std.testing.expect(res[0].is_full_str == false);
     try std.testing.expect(res[0].prefix_count == 1);
     try std.testing.expectEqual(1, res[1]);
 
-    try trie.add("abcde");
+    trie.add("abcde");
     res = trie.get("abcd");
     try std.testing.expect(res[0].is_full_str == true);
     try std.testing.expect(res[0].prefix_count == 2);
@@ -136,7 +142,7 @@ test "Trie test" {
     try std.testing.expect(res[0].prefix_count == 1);
     try std.testing.expectEqual(4, res[1]);
 
-    try trie.add("aa");
+    trie.add("aa");
     res = trie.get("a");
     try std.testing.expect(res[0].is_full_str == false);
     try std.testing.expect(res[0].prefix_count == 3);

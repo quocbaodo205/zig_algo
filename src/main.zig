@@ -8,7 +8,10 @@ const allocator = @import("allocator.zig");
 const max_n = 30010;
 var a: [max_n]i64 = undefined;
 
+/// Main solving function for each test cases.
 pub fn solve() !void {
+    defer _ = allocator.arena.reset(.retain_capacity);
+
     const n = in.read(usize);
     const q = in.read(usize);
     in.readBuffer(i64, a[0..n]);
@@ -45,13 +48,13 @@ pub fn solve() !void {
 }
 
 pub fn main() !void {
+    defer allocator.arena.deinit();
     // Support test cases reading.
     // const t = in.read(usize);
     // for (0..t) |_| {
     try solve();
     // }
     try writer.flush(); // Ending flush
-    allocator.arena.deinit(); // Always deinit at the end.
 }
 
 // ================================ Utils ===============================
@@ -66,8 +69,8 @@ pub fn main() !void {
 
 // Definition for IO: Buffer and writer
 var in = CPInput.init();
-var inbuf: [1 << 12]u8 = undefined;
-var stdout_buffer: [1 << 12]u8 = undefined;
+var inbuf: [100010]u8 = undefined;
+var stdout_buffer: [100010]u8 = undefined;
 var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
 const writer = &stdout_writer.interface;
 
@@ -120,7 +123,6 @@ const CPInput = struct {
         return self.take();
     }
 
-    /// Panic if cannot parse
     pub fn read(self: *Self, comptime T: type) T {
         const data = self.take();
         // Process the correct function for each type

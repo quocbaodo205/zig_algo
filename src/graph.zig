@@ -1,5 +1,6 @@
 const std = @import("std");
 const allocator = @import("allocator.zig");
+const dq = @import("ds.zig");
 
 /// Graph with dynamic node type. Underline is an adj list of usize.
 /// If node type is of Int, directly store inside the [n]ArrayList.
@@ -37,6 +38,7 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
         }
 
         pub fn fromEdgesUnweighted(edges: []const E) Self {
+            @branchHint(.likely);
             var self = Self.new();
             // All array list is of different memory so cannot @splat.
             switch (@typeInfo(node_type)) {
@@ -75,14 +77,121 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
 
         /// When using the graph, assume all usize. Convert outside via hash / unhash should needed.
         pub fn get(self: *const Self, u: usize) []GE {
+            @branchHint(.likely);
             return self.g[u].items;
+        }
+
+        /// Reset state but keep allocated memory for multiple test cases usage.
+        pub fn reset(self: *Self) void {
+            for (0..n) |i| {
+                self.g[i].shrinkRetainingCapacity(0);
+            }
+            self.al.reset();
         }
 
         pub fn deinit(self: *Self) void {
             self.al.deinit();
         }
+
+        // ================================ Classic algo =================
+
+        /// Minimal DFS from a vertex. Create a DFS struct that contains needed infomation.
+        /// Probably never use, usually for reference only so we can expand.
+        pub fn makeDFS() type {
+            @branchHint(.cold);
+            return struct {
+                pub var used: [n]bool = @splat(false);
+
+                pub fn dfs(u: usize, graph: *const Self) void {
+                    used[u] = true;
+                    for (graph.get(u)) |*ge| {
+                        if (!used[ge.v]) {
+                            dfs(ge.v, graph);
+                        }
+                    }
+                }
+            };
+        }
+
+        /// Minimal BFS from starting vertices. Create a BFS struct that contains needed infomation.
+        pub fn makeBFS() type {
+            return struct {
+                var q = dq.Deque(usize, n * 10).new();
+                var in_queue: [n]bool = @splat(false);
+                var distance: [n]u32 = @splat(1000000000);
+
+                fn bfs(starts: []const usize, graph: *const Self) void {
+                    for (starts) |u| {
+                        q.push_back(&u);
+                        distance[u] = 0;
+                        in_queue[u] = true;
+                    }
+                    while (true) {
+                        if (q.pop_front()) |u| {
+                            for (graph.get(u)) |*ge| {
+                                if (in_queue[ge.v]) {
+                                    continue;
+                                }
+                                distance[ge.v] = distance[u] + 1;
+                                q.push_back(&ge.v);
+                                in_queue[ge.v] = true;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            };
+        }
+
+        /// Minimal topo structures. `order` should be get after calling `getTopoOrder`.
+        pub fn makeTopo() type {
+            return struct {
+                var state: [n]u8 = @splat(0);
+                // Reverse order is the topo order
+                pub var order: [n]usize = undefined;
+                pub var size: usize = 0;
+
+                fn dfs(u: usize, graph: *const Self) bool {
+                    state[u] = 1;
+                    for (graph.get(u)) |*ge| {
+                        if (state[ge.v] == 1) {
+                            // Loop found
+                            return false;
+                        }
+                        if (state[ge.v] == 0) {
+                            // New vertext
+                            const child_dfs_res = dfs(ge.v, graph);
+                            if (!child_dfs_res) {
+                                return false;
+                            }
+                        }
+                    }
+                    state[u] = 2;
+                    order[size] = u;
+                    size += 1;
+                    return true;
+                }
+
+                /// Recursively get the topological order.
+                /// The `order` is the reverse order.
+                pub fn getTopoOrder(graph: *const Self) bool {
+                    for (0..n) |u| {
+                        if (state[u] == 0) {
+                            const dfs_res = dfs(u, graph);
+                            if (!dfs_res) {
+                                return false;
+                            }
+                        }
+                    }
+                    return true;
+                }
+            };
+        }
     };
 }
+
+// ================================== Vertex types ==============================
 
 /// GridPoint that provide hash / unhash to be able to use as a graph.
 /// y = 0..m
@@ -137,7 +246,7 @@ const StringVertices = struct {
         var self = Self{
             .al = .init(),
             .all_str = undefined,
-            .trie = trie_type.new() catch unreachable,
+            .trie = trie_type.new(),
         };
         self.all_str = std.ArrayList([]const u8).initCapacity(self.al.allocator(), 10) catch unreachable;
 
@@ -153,7 +262,7 @@ const StringVertices = struct {
 
     pub fn add(self: *Self, data: []const u8) void {
         self.all_str.append(self.al.allocator(), data) catch unreachable;
-        self.trie.add(data) catch unreachable;
+        self.trie.add(data);
     }
 
     pub fn unhash(self: *const Self, u: usize) StringVertex {
@@ -193,103 +302,16 @@ test "Test graph usize" {
     var g = gtype.fromEdgesUnweighted(&edges);
     defer g.deinit();
 
-    // All usage can create a local struct with the run function that accept the graph
-
-    // ================================== DFS =====================================
-    // How to dfs with passed in graph: Create a running struct that contain all needed info.
-    // Should be always locally based on gtype
-    const DFS = struct {
-        var used: [max_n]bool = @splat(false);
-
-        fn dfs(u: usize, graph: *const gtype) void {
-            std.debug.print("u = {}\n", .{u});
-            used[u] = true;
-            for (graph.get(u)) |ge| {
-                if (!used[ge.v]) {
-                    dfs(ge.v, graph);
-                }
-            }
-        }
-    };
-
+    const DFS = gtype.makeDFS();
     DFS.dfs(0, &g);
     std.debug.print("used = {any}\n", .{DFS.used});
 
-    // ================================== BFS =====================================
-    const BFS = struct {
-        const dq = @import("ds.zig");
-        var q = dq.Deque(usize, max_n * 10).new();
-        var in_queue: [max_n]bool = @splat(false);
-        var distance: [max_n]u32 = @splat(1000000000);
-
-        fn bfs(starts: []const usize, graph: *const gtype) void {
-            for (starts) |u| {
-                q.push_back(&u);
-                distance[u] = 0;
-                in_queue[u] = true;
-            }
-            while (true) {
-                if (q.pop_front()) |u| {
-                    for (graph.get(u)) |ge| {
-                        if (in_queue[ge.v]) {
-                            continue;
-                        }
-                        distance[ge.v] = distance[u] + 1;
-                        q.push_back(&ge.v);
-                        in_queue[ge.v] = true;
-                    }
-                } else {
-                    break;
-                }
-            }
-        }
-    };
-
     const start: [1]usize = [1]usize{0};
+    const BFS = gtype.makeBFS();
     BFS.bfs(&start, &g);
     std.debug.print("distance = {any}\n", .{BFS.distance});
 
-    // ================================== Topo =====================================
-    const Topo = struct {
-        var state: [max_n]u8 = @splat(0);
-        // Reverse order is the topo order
-        var order: [max_n]usize = @splat(0);
-        var size: usize = 0;
-
-        fn dfs(u: usize, graph: *const gtype) bool {
-            state[u] = 1;
-            for (graph.get(u)) |ge| {
-                if (state[ge.v] == 1) {
-                    // Loop found
-                    return false;
-                }
-                if (state[ge.v] == 0) {
-                    // New vertext
-                    const child_dfs_res = dfs(ge.v, graph);
-                    if (!child_dfs_res) {
-                        return false;
-                    }
-                }
-            }
-            state[u] = 2;
-            order[size] = u;
-            size += 1;
-            return true;
-        }
-
-        fn getTopoOrder(graph: *const gtype) bool {
-            for (0..max_n) |u| {
-                if (state[u] == 0) {
-                    const dfs_res = dfs(u, graph);
-                    if (!dfs_res) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        }
-    };
-
+    const Topo = gtype.makeTopo();
     _ = Topo.getTopoOrder(&g);
     std.debug.print("Topo order: {any}\n", .{Topo.order[0..Topo.size]});
 }
@@ -339,62 +361,13 @@ test "Test graph grid" {
     var g = gtype.fromEdgesUnweighted(&edges);
     defer g.deinit();
 
-    // All usage can create a local struct with the run function that accept the graph
-
-    // ================================== DFS =====================================
-    // How to dfs with passed in graph: Create a running struct that contain all needed info.
-    // Should be always locally based on gtype
-    const DFS = struct {
-        var used: [n * m]bool = @splat(false);
-
-        fn dfs(u: usize, graph: *const gtype) void {
-            std.debug.print("u = {any}\n", .{gridPointType.unhash(u)});
-            used[u] = true;
-            for (graph.get(u)) |ge| {
-                if (!used[ge.v]) {
-                    dfs(ge.v, graph);
-                }
-            }
-        }
-    };
-
+    const DFS = gtype.makeDFS();
     DFS.dfs(0, &g);
-    // std.debug.print("used = {any}\n", .{DFS.used});
-
-    // ================================== BFS =====================================
-    const BFS = struct {
-        const dq = @import("ds.zig");
-        var q = dq.Deque(usize, n * m * 4).new();
-        var in_queue: [n * m]bool = @splat(false);
-        var distance: [n * m]u32 = @splat(1000000000);
-
-        fn bfs(starts: []const usize, graph: *const gtype) void {
-            for (starts) |u| {
-                q.push_back(&u);
-                distance[u] = 0;
-                in_queue[u] = true;
-            }
-            while (true) {
-                if (q.pop_front()) |u| {
-                    for (graph.get(u)) |ge| {
-                        if (in_queue[ge.v]) {
-                            continue;
-                        }
-                        distance[ge.v] = distance[u] + 1;
-                        q.push_back(&ge.v);
-                        in_queue[ge.v] = true;
-                    }
-                } else {
-                    break;
-                }
-            }
-        }
-    };
-
     const s = gridPointType{ .x = 0, .y = 0 };
     const start: [1]usize = [1]usize{s.hash()};
+    const BFS = gtype.makeBFS();
     BFS.bfs(&start, &g);
-    // std.debug.print("distance = {any}\n", .{BFS.distance});
+    std.debug.print("distance = {any}\n", .{BFS.distance});
 }
 
 test "Test graph string" {
@@ -424,37 +397,8 @@ test "Test graph string" {
     };
     var g = gtype.fromEdgesUnweighted(&edges);
     defer g.deinit();
-    // ================================== BFS =====================================
-    const BFS = struct {
-        const dq = @import("ds.zig");
-        var q = dq.Deque(usize, 10).new();
-        var in_queue: [10]bool = @splat(false);
-        var distance: [10]u32 = @splat(1000000000);
-
-        fn bfs(starts: []const usize, graph: *const gtype) void {
-            for (starts) |u| {
-                q.push_back(&u);
-                distance[u] = 0;
-                in_queue[u] = true;
-            }
-            while (true) {
-                if (q.pop_front()) |u| {
-                    for (graph.get(u)) |ge| {
-                        if (in_queue[ge.v]) {
-                            continue;
-                        }
-                        distance[ge.v] = distance[u] + 1;
-                        q.push_back(&ge.v);
-                        in_queue[ge.v] = true;
-                    }
-                } else {
-                    break;
-                }
-            }
-        }
-    };
-
     const start: [1]usize = [1]usize{0};
+    const BFS = gtype.makeBFS();
     BFS.bfs(&start, &g);
-    std.debug.print("distance = {any}\n", .{BFS.distance});
+    // std.debug.print("distance = {any}\n", .{BFS.distance});
 }
