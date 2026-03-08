@@ -96,7 +96,7 @@ pub fn Deque(comptime T: type, max_n: comptime_int) type {
             return pop_data;
         }
 
-        /// Print the queue
+        /// Print the queue.
         pub fn print(self: Self) void {
             std.debug.print("[", .{});
             var i = self.l;

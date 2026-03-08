@@ -1,94 +1,58 @@
 const std = @import("std");
-const Io = std.Io;
+const allocator = @import("allocator.zig");
 
-// Some constant buffer and pre-allocation
-const buffer_limit = 20000000;
+const BUNDLE = false;
 
-var fbuffer: [buffer_limit]u8 = undefined;
-var fba = std.heap.FixedBufferAllocator.init(&fbuffer);
+// ===================== Solving =====================
 
+// Static allocations for array inputs
+var c: [1001]u32 = undefined;
+
+/// Main solving function for each test cases.
 pub fn solve() !void {
-    var arena = std.heap.ArenaAllocator.init(fba.allocator());
-    defer arena.deinit();
-    const al = fba.allocator();
+    defer _ = allocator.arena.reset(.retain_capacity);
 
-    // =================== Solve the problem =====================
     const n = in.read(usize);
-    const q = in.read(usize);
-    const a = in.readArrayList(n, i64, al);
-
-    // Expression for range l..=r can be calculated as:
-    // sum j in [l..=r] | -j^2*a[j] + (l+r)*j*a[j] + (1-l)*(r+1)*a[j].
-    // We can store prefix sum for i^2*a[i], i*a[i], a[i] (1 based).
-    var psum_i2: [300001]i64 = @splat(0);
-    for (0..n) |i| {
-        psum_i2[i + 1] = psum_i2[i] + @as(i64, @intCast(i + 1)) * @as(i64, @intCast(i + 1)) * a.items[i];
+    const m = in.read(usize);
+    var total: u32 = 0;
+    in.readBuffer(u32, c[0..m]);
+    for (0..n) |_| {
+        const a = in.read(usize) - 1;
+        const b = in.read(u32);
+        total += @min(c[a], b);
+        c[a] -= @min(c[a], b);
     }
-
-    var psum_i: [300001]i64 = @splat(0);
-    for (0..n) |i| {
-        psum_i[i + 1] = psum_i[i] + @as(i64, @intCast(i + 1)) * a.items[i];
-    }
-
-    var psum: [300001]i64 = @splat(0);
-    for (0..n) |i| {
-        psum[i + 1] = psum[i] + a.items[i];
-    }
-
-    for (0..q) |_| {
-        const l = in.read(usize);
-        const r = in.read(usize);
-        const li: i64 = @intCast(l);
-        const ri: i64 = @intCast(r);
-        const p2 = psum_i2[r] - psum_i2[l - 1]; // sum j^2*a[j]
-        const p1 = psum_i[r] - psum_i[l - 1]; // sum j*a[j]
-        const p = psum[r] - psum[l - 1]; // sum a[j]
-        const ans: i64 = -p2 + (li + ri) * p1 + (1 - li) * (ri + 1) * p;
-        print("{}\n", .{ans});
-    }
+    print("{}\n", .{total});
 }
 
 pub fn main() !void {
-    // Init the input + read all the content
-    // const t = in.read(usize);
-    // for (0..t) |_| {
-    try solve();
-    // }
-    try writer.flush(); // Ending flush
+    if (BUNDLE) {
+        _ = try bundle();
+    } else {
+        defer allocator.arena.deinit();
+        // Support test cases reading.
+        // const t = in.read(usize);
+        // for (0..t) |_| {
+        try solve();
+        // }
+        try writer.flush(); // Ending flush
+    }
 }
 
 // ================================ Utils ===============================
 
+// Sorting instruction:
+
 /// Position of the first index i, so that arr[i] >= x
 /// Sort first: std.mem.sort(u32, a.items, {}, comptime std.sort.asc(u32));
-pub fn lowerBoundPos(comptime T: type, arr: []const T, x: T) ?usize {
-    var l: usize = 0;
-    var r = arr.len - 1;
-    var ans = arr.len;
-    while (l <= r) {
-        const mid = (l + r) / 2;
-        if (arr[mid] >= x) {
-            ans = mid;
-            if (mid == 0) {
-                break;
-            }
-            r = mid - 1;
-        } else {
-            l = mid + 1;
-        }
-    }
-    if (ans == arr.len) {
-        return null;
-    }
-    return ans;
-}
+/// std.sort.lowerBound(u32, a.items, 3, comptime std.sort.asc(u32));
 
 // ================================ IO ============================
 
 // Definition for IO: Buffer and writer
 var in = CPInput.init();
-var inbuf: [buffer_limit]u8 = undefined;
-var stdout_buffer: [1024]u8 = undefined;
+var inbuf: [100010]u8 = undefined;
+var stdout_buffer: [100010]u8 = undefined;
 var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
 const writer = &stdout_writer.interface;
 
@@ -141,12 +105,12 @@ const CPInput = struct {
         return self.take();
     }
 
-    /// Panic if cannot parse
     pub fn read(self: *Self, comptime T: type) T {
         const data = self.take();
         // Process the correct function for each type
         switch (@typeInfo(T)) {
             .int => {
+                @branchHint(.likely);
                 return std.fmt.parseInt(T, data, 10) catch unreachable;
             },
             .float => {
@@ -158,26 +122,200 @@ const CPInput = struct {
         }
     }
 
-    pub fn readArrayList(self: *Self, n: usize, comptime T: type, allocator: std.mem.Allocator) std.ArrayList(T) {
-        var arr = std.ArrayList(T).initCapacity(allocator, n) catch unreachable;
+    pub fn readBuffer(self: *Self, comptime T: type, arr_buffer: []T) void {
         // Process the correct function for each type
         switch (@typeInfo(T)) {
             .int => {
-                for (0..n) |_| {
+                @branchHint(.likely);
+                for (0..arr_buffer.len) |i| {
                     const data = self.take();
-                    arr.append(allocator, std.fmt.parseInt(T, data, 10) catch unreachable) catch unreachable;
+                    arr_buffer[i] = std.fmt.parseInt(T, data, 10) catch unreachable;
                 }
             },
             .float => {
-                for (0..n) |_| {
+                for (0..arr_buffer.len) |i| {
                     const data = self.take();
-                    arr.append(allocator, std.fmt.parseFloat(T, data) catch unreachable) catch unreachable;
+                    arr_buffer[i] = std.fmt.parseFloat(T, data, 10) catch unreachable;
                 }
             },
             else => {
                 @panic("Type not supported");
             },
         }
-        return arr;
     }
 };
+
+// ======================================== bundle instruction
+const Regex = @import("regex").Regex;
+const ds = @import("ds.zig");
+const graph = @import("graph.zig");
+
+/// Read all the import of the current file.
+fn readAllImport(file_name: []const u8) !std.StringHashMap([]const u8) {
+    var res = std.StringHashMap([]const u8).init(std.heap.page_allocator);
+    // Step 1: Open the file.
+    var file_read_buffer: [1000000]u8 = undefined;
+    var file = std.fs.cwd().openFile(file_name, .{ .mode = .read_only }) catch unreachable;
+    var reader = file.reader(&file_read_buffer);
+    var re = try Regex.compile(std.heap.page_allocator, "const (.*) = @import.\"(.*[.]zig)\".");
+    while (true) {
+        const line = reader.interface.takeDelimiterInclusive('\n') catch |err| {
+            switch (err) {
+                error.EndOfStream => {
+                    break;
+                },
+                else => {
+                    @panic("wew");
+                },
+            }
+        };
+        if (std.mem.eql(u8, line, "// ======================================== bundle instruction\n")) {
+            break;
+        }
+        if (try re.captures(line)) |cp| {
+            std.debug.print("Match for file, cp0 = {s}, cp1 = {s}, cp2 = {s}\n", .{ cp.sliceAt(0).?, cp.sliceAt(1).?, cp.sliceAt(2).? });
+            try res.put(cp.sliceAt(2).?, cp.sliceAt(1).?);
+        }
+    }
+    return res;
+}
+
+/// Main bundling function: read all needed files and write to output.
+pub fn bundle() ![]const u8 {
+    var gpa = std.heap.page_allocator;
+    // Step 1: Read files + make graph
+    var all_file_mp = std.StringHashMap([]const u8).init(gpa);
+    var q = ds.Deque([]const u8, 100).new();
+    q.push_back(&"main.zig");
+    // Graph structure
+    var str_v = graph.StringVertices.new();
+    defer str_v.deinit();
+    const node_type = graph.StringVertices.StringVertex;
+    const gtype = graph.Graph(node_type, void, 10, 0);
+    const E = gtype.E;
+    var edges = try std.ArrayList(E).initCapacity(gpa, 10);
+    while (q.pop_front()) |f| {
+        str_v.add(f);
+        const true_file_name = try std.fmt.allocPrint(gpa, "src/{s}", .{f});
+        std.debug.print("------- Process file {s} --------\n", .{true_file_name});
+        const mp = try readAllImport(true_file_name);
+        var iter = mp.iterator();
+        while (iter.next()) |item| {
+            // These 2 value will be gone when mp is gone...
+            const tmp_k = try gpa.alloc(u8, item.key_ptr.len);
+            @memcpy(tmp_k, item.key_ptr.*);
+            const tmp_v = try gpa.alloc(u8, item.value_ptr.len);
+            @memcpy(tmp_v, item.value_ptr.*);
+            std.debug.print("k = {s}, v = {s}\n", .{ tmp_k, tmp_v });
+
+            if (!all_file_mp.contains(item.key_ptr.*)) {
+                str_v.add(tmp_k);
+                try all_file_mp.put(tmp_k, tmp_v);
+                q.push_back(&tmp_k);
+            }
+            try edges.append(gpa, E{
+                .u = str_v.newStrV(f),
+                .v = str_v.newStrV(tmp_k),
+                .w = undefined,
+            });
+            std.debug.print("{any} -> {any}\n", .{ str_v.trie.get(f)[0].value, str_v.trie.get(tmp_k)[0].value });
+        }
+    }
+    var g = gtype.fromEdgesUnweighted(edges.items);
+    defer g.deinit();
+
+    // Step 2: Prepare a file writer
+    var write_buffer: [1024]u8 = undefined;
+    var wf = std.fs.cwd().createFile("bundle.zig", .{ .truncate = true }) catch unreachable;
+    var file_writer = wf.writer(&write_buffer);
+    var wif = &file_writer.interface;
+    try wif.writeAll("const std = @import(\"std\");\n");
+    var file_read_buffer: [1000000]u8 = undefined;
+    var re = try Regex.compile(std.heap.page_allocator, "const (.*) = @import.\"(.*[.]zig)\".");
+
+    // Step 3: Write file by topological order
+    const topo = gtype.makeTopo();
+    _ = topo.getTopoOrder(&g);
+    std.debug.print("Topo order: {any}\n", .{topo.order});
+    for (topo.order) |u| {
+        if (u >= str_v.cur_mx) {
+            continue;
+        }
+        if (u == 0) {
+            continue;
+        }
+        const x = str_v.unhash(u);
+        std.debug.print("Read file src/{s} and write content to {s}\n", .{ x.str, all_file_mp.get(x.str).? });
+        try wif.writeAll(try std.fmt.allocPrint(gpa, "const {s} = struct {s}\n", .{ all_file_mp.get(x.str).?, "{" }));
+        const true_file_name = try std.fmt.allocPrint(gpa, "src/{s}", .{x.str});
+        var file = std.fs.cwd().openFile(true_file_name, .{ .mode = .read_only }) catch unreachable;
+        var reader = file.reader(&file_read_buffer);
+        while (true) {
+            const line = reader.interface.takeDelimiterInclusive('\n') catch |err| {
+                switch (err) {
+                    error.EndOfStream => {
+                        break;
+                    },
+                    else => {
+                        @panic("wew");
+                    },
+                }
+            };
+            if (std.mem.eql(u8, line, "const std = @import(\"std\");\n")) {
+                continue;
+            }
+            if (line.len > 4 and std.mem.eql(u8, line[0..4], "test")) {
+                break; // Ignore test.
+            }
+            if (std.mem.eql(u8, line, "// ======================================== bundle instruction\n")) {
+                break;
+            }
+            if (try re.captures(line) != null) {
+                continue; // Don't write this line.
+            }
+            try wif.writeAll(line);
+        }
+        try wif.writeAll("};\n");
+        try wif.flush();
+    }
+
+    var file = std.fs.cwd().openFile("src/main.zig", .{ .mode = .read_only }) catch unreachable;
+    var reader = file.reader(&file_read_buffer);
+    while (true) {
+        const line = reader.interface.takeDelimiterInclusive('\n') catch |err| {
+            switch (err) {
+                error.EndOfStream => {
+                    break;
+                },
+                else => {
+                    @panic("wew");
+                },
+            }
+        };
+        if (std.mem.eql(u8, line, "const BUNDLE = true;\n")) {
+            try wif.writeAll("const BUNDLE = false;\n");
+            continue;
+        }
+        if (std.mem.eql(u8, line, "const std = @import(\"std\");\n")) {
+            continue;
+        }
+        if (std.mem.eql(u8, line, "        _ = try bundle();\n")) {
+            continue; // Ignore bundle instruction.
+        }
+        if (line.len > 4 and std.mem.eql(u8, line[0..4], "test")) {
+            break; // Ignore test.
+        }
+        if (std.mem.eql(u8, line, "// ======================================== bundle instruction\n")) {
+            break;
+        }
+        if (try re.captures(line) != null) {
+            continue; // Don't write this line.
+        }
+        try wif.writeAll(line);
+    }
+    try wif.flush();
+
+    // Last step: Write the main file
+
+    return "Done";
+}

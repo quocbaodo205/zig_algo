@@ -1,8 +1,7 @@
 /// Segment tree data structure + sample problems
 const std = @import("std");
 
-/// Simple SegmentTree for anytype T that support ID and OP, data range 0..n
-/// Stack allocated fix size data
+/// Simple SegmentTree for anytype T that support ID and OP, data range 0..n.
 pub fn SegmentTree(n: comptime_int, T: anytype) type {
     return struct {
         tree: [4 * n + 5]T, // With some buffer data
@@ -33,7 +32,7 @@ pub fn SegmentTree(n: comptime_int, T: anytype) type {
             self.tree[node] = self.tree[node * 2].op(&self.tree[node * 2 + 1]);
         }
 
-        pub fn from_array(arr: []T) Self {
+        pub fn from_slice(arr: []T) Self {
             var tree = Self.new();
             tree.from_array_rc(1, 0, n - 1, arr);
             return tree;
@@ -135,7 +134,7 @@ test "Segment Tree" {
             .max = 0,
         };
     }
-    var tree = SegmentTree(10, SingleSetRangeMax).from_array(init_arr[0..10]);
+    var tree = SegmentTree(10, SingleSetRangeMax).from_slice(&init_arr);
 
     tree.set(1, &SingleSetRangeMax{ .max = 100 });
     var res = tree.get(1);
