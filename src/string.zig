@@ -134,13 +134,13 @@ pub const UniqueHashTrieNodeType = struct {
 test "Trie test" {
     var trie = Trie(26, 'a', PrefixTrieNodeType).new();
     defer trie.deinit();
-    trie.add("abcd");
+    _ = trie.add("abcd");
     var res = trie.get("ab");
     try std.testing.expect(res[0].is_full_str == false);
     try std.testing.expect(res[0].prefix_count == 1);
     try std.testing.expectEqual(1, res[1]);
 
-    trie.add("abcde");
+    _ = trie.add("abcde");
     res = trie.get("abcd");
     try std.testing.expect(res[0].is_full_str == true);
     try std.testing.expect(res[0].prefix_count == 2);
@@ -150,7 +150,7 @@ test "Trie test" {
     try std.testing.expect(res[0].prefix_count == 1);
     try std.testing.expectEqual(4, res[1]);
 
-    trie.add("aa");
+    _ = trie.add("aa");
     res = trie.get("a");
     try std.testing.expect(res[0].is_full_str == false);
     try std.testing.expect(res[0].prefix_count == 3);
