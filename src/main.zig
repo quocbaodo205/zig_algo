@@ -1,28 +1,19 @@
 const std = @import("std");
 const allocator = @import("allocator.zig");
+const combinatorics = @import("combinatorics.zig");
 
 const BUNDLE = false;
+const MOD: usize = 998244353;
 
 // ===================== Solving =====================
-
-// Static allocations for array inputs
-var c: [1001]u32 = undefined;
 
 /// Main solving function for each test cases.
 pub fn solve() !void {
     defer _ = allocator.arena.reset(.retain_capacity);
-
-    const n = in.read(usize);
-    const m = in.read(usize);
-    var total: u32 = 0;
-    in.readBuffer(u32, c[0..m]);
-    for (0..n) |_| {
-        const a = in.read(usize) - 1;
-        const b = in.read(u32);
-        total += @min(c[a], b);
-        c[a] -= @min(c[a], b);
-    }
-    print("{}\n", .{total});
+    const n = in.read(u32);
+    const m = in.read(u32);
+    const result = combinatorics.starsAndBarsMod(m, n, MOD);
+    print("{}\n", .{result});
 }
 
 pub fn main() !void {
@@ -147,8 +138,8 @@ const CPInput = struct {
 
 // ======================================== bundle instruction
 const Regex = @import("regex").Regex;
-const ds = @import("ds.zig");
 const graph = @import("graph.zig");
+const ds = @import("ds.zig");
 
 /// Read all the import of the current file.
 fn readAllImport(file_name: []const u8) !std.StringHashMap([]const u8) {

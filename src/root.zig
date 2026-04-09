@@ -8,6 +8,9 @@ comptime {
     _ = @import("segment_tree.zig");
     _ = @import("graph.zig");
     _ = @import("fw_tree.zig");
+    _ = @import("persistent_array.zig");
+    _ = @import("disjoint_set.zig");
+    _ = @import("combinatorics.zig");
 }
 
 pub fn bufferedPrint() !void {
