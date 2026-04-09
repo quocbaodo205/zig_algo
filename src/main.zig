@@ -1,19 +1,36 @@
 const std = @import("std");
 const allocator = @import("allocator.zig");
-const combinatorics = @import("combinatorics.zig");
+const fps = @import("fps.zig");
+const modint = @import("modint.zig");
 
 const BUNDLE = false;
-const MOD: usize = 998244353;
+const Mint = modint.Modint998244353;
 
 // ===================== Solving =====================
 
 /// Main solving function for each test cases.
 pub fn solve() !void {
     defer _ = allocator.arena.reset(.retain_capacity);
-    const n = in.read(u32);
-    const m = in.read(u32);
-    const result = combinatorics.starsAndBarsMod(m, n, MOD);
-    print("{}\n", .{result});
+    const al = allocator.arena.allocator();
+    const n = in.read(usize);
+    const m = in.read(usize);
+    const initial_coef: [10]Mint = [_]Mint{ Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1) };
+    var f = try fps.Fps998244353.fromSlice(al, &initial_coef, n);
+    try f.pow(m - 1, n);
+    var ans = Mint.fromInt(0);
+    var psum = Mint.fromInt(0);
+    const n_mod_9 = n % 9;
+    for (f.coeffs, 0..) |k, i| {
+        psum = psum.add(k);
+        // const i_mod_9 = i % 9;
+        // std.debug.print("i = {}, k = {}, psum = {}, i%9 = {}, n%9 = {}\n", .{ i, k, psum, i_mod_9, n_mod_9 });
+        if (i % 9 == n_mod_9) {
+            ans = ans.add(psum);
+        }
+    }
+    const sub = n / 9;
+    ans = ans.sub(Mint.fromInt(sub));
+    print("{}\n", .{ans.toInt()});
 }
 
 pub fn main() !void {

@@ -11,6 +11,9 @@ comptime {
     _ = @import("persistent_array.zig");
     _ = @import("disjoint_set.zig");
     _ = @import("combinatorics.zig");
+    _ = @import("modint.zig");
+    _ = @import("fps.zig");
+    _ = @import("ntt.zig");
 }
 
 pub fn bufferedPrint() !void {
