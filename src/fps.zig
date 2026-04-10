@@ -11,7 +11,7 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
         const Self = @This();
 
         // NTT helpers (only if use_ntt is true)
-        const Ntt = if (use_ntt) ntt.NttHelpers(ModintType.MOD, fps_root.?) else void;
+        const Ntt = if (use_ntt) ntt.NttHelpers(ModintType, fps_root.?) else void;
 
         /// Initialize an FPS with all zeros
         pub fn init(gpa: std.mem.Allocator, max_degree: usize) !Self {

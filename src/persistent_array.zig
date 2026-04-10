@@ -99,7 +99,7 @@ pub fn PersistentArray(comptime T: type) type {
 }
 
 test "persistent array test" {
-    const allocator = std.testing.allocator;
+    const allocator = std.heap.page_allocator; // show leak otherwise.
 
     // Initialize version 0: [10, 10, 10, 10, 10]
     var v0 = try PersistentArray(usize).init(allocator, 5, 10);

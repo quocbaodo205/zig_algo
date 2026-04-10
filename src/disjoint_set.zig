@@ -165,7 +165,7 @@ test "disjoint set test" {
 }
 
 test "persistent disjoint set test" {
-    const allocator = std.testing.allocator;
+    const allocator = std.heap.page_allocator;
     // Create initial version
     const v0 = try PersistentDisjointSet.init(allocator, 5);
     try std.testing.expect(v0.count == 5);

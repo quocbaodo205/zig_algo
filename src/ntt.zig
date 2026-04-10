@@ -32,10 +32,10 @@ fn mod_inverse_const(a: comptime_int, m: comptime_int) comptime_int {
     return x;
 }
 
-/// NTT (Number Theoretic Transform) and convolution utilities for a given prime modulus MOD
-/// Requires: MOD is a prime such that MOD = c * 2^k + 1 for some c, k
-pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_int) type {
-    const Modint = modint.MontgomeryModint(ntt_mod);
+/// NTT (Number Theoretic Transform) and convolution utilities for a given Modint type
+/// Requires: Modint.MOD is a prime such that Modint.MOD = c * 2^k + 1 for some c, k
+pub fn NttHelpers(comptime ModintType: type, comptime ntt_root: comptime_int) type {
+    const ntt_mod = ModintType.MOD;
 
     // Precompute the maximum log2 we might need (for MOD=998244353, it's 23)
     const max_log: usize = blk: {
@@ -47,8 +47,8 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
 
     // Precompute roots and inverse roots
     const roots = blk: {
-        var res: [max_log + 1]Modint = undefined;
-        res[max_log] = Modint.fromInt(pow_mod_const(ntt_root, (ntt_mod - 1) >> max_log, ntt_mod));
+        var res: [max_log + 1]ModintType = undefined;
+        res[max_log] = ModintType.fromInt(@intCast(pow_mod_const(ntt_root, (ntt_mod - 1) >> max_log, ntt_mod)));
         var i = max_log;
         while (i > 0) : (i -= 1) {
             res[i - 1] = res[i].mul(res[i]);
@@ -56,8 +56,8 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
         break :blk res;
     };
     const inv_roots = blk: {
-        var res: [max_log + 1]Modint = undefined;
-        res[max_log] = Modint.fromInt(mod_inverse_const(pow_mod_const(ntt_root, (ntt_mod - 1) >> max_log, ntt_mod), ntt_mod));
+        var res: [max_log + 1]ModintType = undefined;
+        res[max_log] = ModintType.fromInt(@intCast(mod_inverse_const(pow_mod_const(ntt_root, (ntt_mod - 1) >> max_log, ntt_mod), ntt_mod)));
         var i = max_log;
         while (i > 0) : (i -= 1) {
             res[i - 1] = res[i].mul(res[i]);
@@ -73,7 +73,7 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
 
         /// Compute NTT (Number Theoretic Transform) in place
         /// a must have length a power of two
-        pub fn ntt_f(a: []Modint, invert: bool) void {
+        pub fn ntt_f(a: []ModintType, invert: bool) void {
             const n = a.len;
             const log_n = std.math.log2_int(usize, n);
 
@@ -81,7 +81,7 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
             for (0..n) |i| {
                 const j = bit_reverse(i, log_n);
                 if (i < j) {
-                    std.mem.swap(Modint, &a[i], &a[j]);
+                    std.mem.swap(ModintType, &a[i], &a[j]);
                 }
             }
 
@@ -92,7 +92,7 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
                 const wlen = if (invert) inv_roots[log_k] else roots[log_k];
                 var i: usize = 0;
                 while (i < n) : (i += 2 * k) {
-                    var w = Modint.fromInt(1);
+                    var w = ModintType.fromInt(1);
                     var j: usize = 0;
                     while (j < k) : (j += 1) {
                         const u = a[i + j];
@@ -108,7 +108,7 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
 
             // Inverse NTT scaling
             if (invert) {
-                const inv_n = Modint.fromInt(@intCast(combinatorics.mod_inverse(n, ntt_mod)));
+                const inv_n = ModintType.fromInt(@intCast(combinatorics.mod_inverse(n, ntt_mod)));
                 for (0..n) |i| {
                     a[i] = a[i].mul(inv_n);
                 }
@@ -117,18 +117,18 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
 
         /// Compute convolution of a and b modulo MOD using NTT
         /// Returns a new slice with the result, caller must free with gpa
-        pub fn convolution(gpa: std.mem.Allocator, a: []const Modint, b: []const Modint) ![]Modint {
+        pub fn convolution(gpa: std.mem.Allocator, a: []const ModintType, b: []const ModintType) ![]ModintType {
             var n: usize = 1;
             const required_len = a.len + b.len - 1;
             while (n < required_len) n <<= 1;
 
-            var fa = try gpa.alloc(Modint, n);
+            var fa = try gpa.alloc(ModintType, n);
             defer gpa.free(fa);
-            var fb = try gpa.alloc(Modint, n);
+            var fb = try gpa.alloc(ModintType, n);
             defer gpa.free(fb);
 
-            @memset(fa, Modint.fromInt(0));
-            @memset(fb, Modint.fromInt(0));
+            @memset(fa, ModintType.fromInt(0));
+            @memset(fb, ModintType.fromInt(0));
             @memcpy(fa[0..a.len], a);
             @memcpy(fb[0..b.len], b);
 
@@ -141,7 +141,7 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
 
             ntt_f(fa, true);
 
-            const result = try gpa.alloc(Modint, required_len);
+            const result = try gpa.alloc(ModintType, required_len);
             @memcpy(result, fa[0..required_len]);
             return result;
         }
@@ -149,12 +149,12 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
 }
 
 /// Predefined NTT helpers for common modulus 998244353 (primitive root 3)
-pub const Ntt998244353 = NttHelpers(998244353, 3);
+pub const Ntt998244353 = NttHelpers(modint.Modint998244353, 3);
 
 test "ntt convolution" {
     const gpa = std.testing.allocator;
     const Ntt = Ntt998244353;
-    const Modint = modint.MontgomeryModint(998244353);
+    const Modint = modint.Modint998244353;
 
     // Test (1 + x) * (1 + x) = 1 + 2x + x²
     const a_slice = [_]Modint{ Modint.fromInt(1), Modint.fromInt(1) };
