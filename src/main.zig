@@ -12,8 +12,8 @@ const Mint = modint.Modint998244353;
 pub fn solve() !void {
     defer _ = allocator.arena.reset(.retain_capacity);
     const al = allocator.arena.allocator();
-    const n = in.read(usize);
-    const m = in.read(usize);
+    const n = in.read(u32);
+    const m = in.read(u32);
     const initial_coef: [10]Mint = [_]Mint{ Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1) };
     var f = try fps.Fps998244353.fromSlice(al, &initial_coef, n);
     try f.pow(m - 1, n);
