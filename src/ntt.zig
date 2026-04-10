@@ -2,22 +2,73 @@ const std = @import("std");
 const modint = @import("modint.zig");
 const combinatorics = @import("combinatorics.zig");
 
+// Const pow_mod and mod_inverse for precomputations
+fn pow_mod_const(base: comptime_int, exp: comptime_int, m: comptime_int) comptime_int {
+    var b = base % m;
+    var res: comptime_int = 1;
+    var e = exp;
+    while (e > 0) {
+        if (e & 1 == 1) res = res * b % m;
+        b = b * b % m;
+        e >>= 1;
+    }
+    return res;
+}
+fn mod_inverse_const(a: comptime_int, m: comptime_int) comptime_int {
+    var m_val = m;
+    var a_val = a;
+    var y: comptime_int = 0;
+    var x: comptime_int = 1;
+    while (a_val > 1) {
+        const q = a_val / m_val;
+        const t = m_val;
+        m_val = a_val % m_val;
+        a_val = t;
+        const ty = y;
+        y = x - q * y;
+        x = ty;
+    }
+    if (x < 0) x += m;
+    return x;
+}
+
 /// NTT (Number Theoretic Transform) and convolution utilities for a given prime modulus MOD
 /// Requires: MOD is a prime such that MOD = c * 2^k + 1 for some c, k
 pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_int) type {
     const Modint = modint.MontgomeryModint(ntt_mod);
 
+    // Precompute the maximum log2 we might need (for MOD=998244353, it's 23)
+    const max_log: usize = blk: {
+        var m = ntt_mod - 1;
+        var k: usize = 0;
+        while (m % 2 == 0) : (m /= 2) k += 1;
+        break :blk k;
+    };
+
+    // Precompute roots and inverse roots
+    const roots = blk: {
+        var res: [max_log + 1]Modint = undefined;
+        res[max_log] = Modint.fromInt(pow_mod_const(ntt_root, (ntt_mod - 1) >> max_log, ntt_mod));
+        var i = max_log;
+        while (i > 0) : (i -= 1) {
+            res[i - 1] = res[i].mul(res[i]);
+        }
+        break :blk res;
+    };
+    const inv_roots = blk: {
+        var res: [max_log + 1]Modint = undefined;
+        res[max_log] = Modint.fromInt(mod_inverse_const(pow_mod_const(ntt_root, (ntt_mod - 1) >> max_log, ntt_mod), ntt_mod));
+        var i = max_log;
+        while (i > 0) : (i -= 1) {
+            res[i - 1] = res[i].mul(res[i]);
+        }
+        break :blk res;
+    };
+
     return struct {
-        /// Compute bit-reversed permutation of indices
+        /// Compute bit-reversed permutation of indices (optimized)
         fn bit_reverse(i: usize, log_n: usize) usize {
-            var res: usize = 0;
-            var j = i;
-            var k: usize = 0;
-            while (k < log_n) : (k += 1) {
-                res = (res << 1) | (j & 1);
-                j >>= 1;
-            }
-            return res;
+            return @bitReverse(@as(u64, @intCast(i))) >> (@as(u6, @intCast(64 - log_n)));
         }
 
         /// Compute NTT (Number Theoretic Transform) in place
@@ -34,33 +85,30 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
                 }
             }
 
-            // NTT main loop
-            var len: usize = 2;
-            while (len <= n) : (len <<= 1) {
-                const half_len = len >> 1;
-                const w_len_usize = combinatorics.pow_mod(ntt_root, (ntt_mod - 1) / len, ntt_mod);
-                var w_len = Modint.fromInt(@intCast(w_len_usize));
-                if (invert) {
-                    w_len = Modint.fromInt(@intCast(combinatorics.mod_inverse(w_len_usize, ntt_mod)));
-                }
+            // NTT main loop with precomputed roots
+            var k: usize = 1;
+            var log_k: usize = 1; // since k starts at 1=2^0, len=2k=2^1
+            while (k < n) {
+                const wlen = if (invert) inv_roots[log_k] else roots[log_k];
                 var i: usize = 0;
-                while (i < n) : (i += len) {
+                while (i < n) : (i += 2 * k) {
                     var w = Modint.fromInt(1);
                     var j: usize = 0;
-                    while (j < half_len) : (j += 1) {
+                    while (j < k) : (j += 1) {
                         const u = a[i + j];
-                        const v = a[i + j + half_len].mul(w);
+                        const v = a[i + j + k].mul(w);
                         a[i + j] = u.add(v);
-                        a[i + j + half_len] = u.sub(v);
-                        w = w.mul(w_len);
+                        a[i + j + k] = u.sub(v);
+                        w = w.mul(wlen);
                     }
                 }
+                k <<= 1;
+                log_k += 1;
             }
 
             // Inverse NTT scaling
             if (invert) {
-                const inv_n_usize = combinatorics.mod_inverse(n, ntt_mod);
-                const inv_n = Modint.fromInt(@intCast(inv_n_usize));
+                const inv_n = Modint.fromInt(@intCast(combinatorics.mod_inverse(n, ntt_mod)));
                 for (0..n) |i| {
                     a[i] = a[i].mul(inv_n);
                 }
@@ -81,12 +129,8 @@ pub fn NttHelpers(comptime ntt_mod: comptime_int, comptime ntt_root: comptime_in
 
             @memset(fa, Modint.fromInt(0));
             @memset(fb, Modint.fromInt(0));
-            for (0..a.len) |i| {
-                fa[i] = a[i];
-            }
-            for (0..b.len) |i| {
-                fb[i] = b[i];
-            }
+            @memcpy(fa[0..a.len], a);
+            @memcpy(fb[0..b.len], b);
 
             ntt_f(fa, false);
             ntt_f(fb, false);
