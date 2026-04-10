@@ -3,7 +3,7 @@ const allocator = @import("allocator.zig");
 const fps = @import("fps.zig");
 const modint = @import("modint.zig");
 
-const BUNDLE = false;
+const BUNDLE = true;
 const Mint = modint.Modint998244353;
 
 // ===================== Solving =====================
