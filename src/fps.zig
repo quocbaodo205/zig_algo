@@ -12,6 +12,11 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
 
         // NTT helpers (only if use_ntt is true)
         const Ntt = if (use_ntt) ntt.NttHelpers(ModintType, fps_root.?) else void;
+        const MOD = ModintType.MOD;
+
+        // Precompute inverses of 1..max_n (lazy, on first use)
+        var inv_cache: []ModintType = &.{};
+        var inv_cache_gpa: ?std.mem.Allocator = null;
 
         /// Initialize an FPS with all zeros
         pub fn init(gpa: std.mem.Allocator, max_degree: usize) !Self {
@@ -163,24 +168,230 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
             @memcpy(self.coeffs, result.coeffs);
         }
 
-        /// Compute self^exponent using binary exponentiation in-place, truncating to max_degree
+        /// Compute self^exponent using binary exponentiation or ln/exp in-place, truncating to max_degree
         pub fn pow(self: *Self, exponent: usize, max_degree: usize) !void {
-            var result = try Self.one(self.gpa, max_degree);
-            defer result.deinit();
-            var base = try Self.fromSlice(self.gpa, self.coeffs, max_degree);
-            defer base.deinit();
-            var exp = exponent;
+            // Handle trivial cases
+            if (exponent == 0) {
+                var one_poly = try Self.one(self.gpa, max_degree);
+                defer one_poly.deinit();
+                try self.resize(max_degree);
+                @memcpy(self.coeffs, one_poly.coeffs);
+                return;
+            }
+            if (exponent == 1) {
+                try self.resize(max_degree);
+                return;
+            }
 
-            while (exp > 0) {
-                if (exp % 2 == 1) {
-                    const new_result = try Self.mulHelper(self.gpa, result, base, max_degree);
-                    result.deinit();
-                    result = new_result;
+            // Find first non-zero coefficient
+            var shift: usize = 0;
+            while (shift < self.coeffs.len and self.coeffs[shift].toInt() == 0) : (shift += 1) {}
+            if (shift >= self.coeffs.len) {
+                // All zeros, result is zero
+                var zero_poly = try Self.zero(self.gpa, max_degree);
+                defer zero_poly.deinit();
+                try self.resize(max_degree);
+                @memcpy(self.coeffs, zero_poly.coeffs);
+                return;
+            }
+
+            if (shift * exponent > max_degree) {
+                // Result is zero
+                var zero_poly = try Self.zero(self.gpa, max_degree);
+                defer zero_poly.deinit();
+                try self.resize(max_degree);
+                @memcpy(self.coeffs, zero_poly.coeffs);
+                return;
+            }
+
+            // Use ln/exp if exponent is large enough, or binary exponentiation otherwise
+            const use_ln_exp = exponent > 10;
+
+            if (use_ln_exp and shift == 0 and self.coeffs[0].toInt() == 1) {
+                // Perfect case for ln/exp: starts with 1
+                var ln_self = try Self.fromSlice(self.gpa, self.coeffs, max_degree);
+                defer ln_self.deinit();
+                try ln_self.ln(max_degree);
+
+                // Multiply by exponent
+                for (ln_self.coeffs) |*c| {
+                    c.* = c.*.mul(ModintType.fromInt(@intCast(exponent)));
                 }
-                const new_base = try Self.mulHelper(self.gpa, base, base, max_degree);
-                base.deinit();
-                base = new_base;
-                exp /= 2;
+
+                // Compute exp
+                try ln_self.exp(max_degree);
+
+                // Update self
+                try self.resize(max_degree);
+                @memcpy(self.coeffs, ln_self.coeffs);
+            } else {
+                // Binary exponentiation
+                var result = try Self.one(self.gpa, max_degree);
+                defer result.deinit();
+                var base = try Self.fromSlice(self.gpa, self.coeffs, max_degree);
+                defer base.deinit();
+                var exp_val = exponent;
+
+                while (exp_val > 0) {
+                    if (exp_val % 2 == 1) {
+                        const new_result = try Self.mulHelper(self.gpa, result, base, max_degree);
+                        result.deinit();
+                        result = new_result;
+                    }
+                    const new_base = try Self.mulHelper(self.gpa, base, base, max_degree);
+                    base.deinit();
+                    base = new_base;
+                    exp_val /= 2;
+                }
+
+                // Update self with result
+                try self.resize(max_degree);
+                @memcpy(self.coeffs, result.coeffs);
+            }
+        }
+
+        /// Get precomputed inverses of 1..n (lazy initialization)
+        fn getInvCache(gpa: std.mem.Allocator, n: usize) ![]const ModintType {
+            if (n == 0) return &.{};
+            if (inv_cache.len <= n) {
+                const new_len = @max(n + 1, inv_cache.len * 2, 32);
+                if (inv_cache_gpa) |old_gpa| {
+                    old_gpa.free(inv_cache);
+                }
+                const new_inv = try gpa.alloc(ModintType, new_len);
+                @memset(new_inv, ModintType.fromInt(0));
+                if (inv_cache.len > 0) {
+                    @memcpy(new_inv[0..inv_cache.len], inv_cache);
+                }
+                for (inv_cache.len..new_len) |i| {
+                    if (i == 0) {
+                        new_inv[i] = ModintType.fromInt(0);
+                    } else if (i == 1) {
+                        new_inv[i] = ModintType.fromInt(1);
+                    } else {
+                        const mod_i = MOD % i;
+                        const div = MOD / i;
+                        const neg_div = MOD - div;
+                        new_inv[i] = new_inv[mod_i].mul(ModintType.fromInt(@intCast(neg_div)));
+                    }
+                }
+                inv_cache = new_inv;
+                inv_cache_gpa = gpa;
+            }
+            return inv_cache[1..n+1];
+        }
+
+        /// Compute derivative of polynomial in-place: P'(x)
+        pub fn deriv(self: *Self, max_degree: usize) !void {
+            try self.resize(max_degree);
+            // For i from 1 to max_degree: new[i-1] = i * old[i]
+            var i: usize = 0;
+            while (i < max_degree) : (i += 1) {
+                const old_i = i + 1;
+                if (old_i < self.coeffs.len) {
+                    self.coeffs[i] = self.coeffs[old_i].mul(ModintType.fromInt(@intCast(old_i)));
+                } else {
+                    self.coeffs[i] = ModintType.fromInt(0);
+                }
+            }
+            if (max_degree < self.coeffs.len) {
+                self.coeffs[max_degree] = ModintType.fromInt(0);
+            }
+        }
+
+        /// Compute integral of polynomial in-place (with constant term 0): ∫P(x)dx
+        pub fn integ(self: *Self, max_degree: usize) !void {
+            try self.resize(max_degree);
+            const invs = try getInvCache(self.gpa, max_degree);
+            // For i from max_degree down to 1: new[i] = old[i-1] / i
+            var i = max_degree;
+            while (i >= 1) : (i -= 1) {
+                const old_i = i - 1;
+                if (old_i < self.coeffs.len) {
+                    self.coeffs[i] = self.coeffs[old_i].mul(invs[i - 1]);
+                } else {
+                    self.coeffs[i] = ModintType.fromInt(0);
+                }
+            }
+            if (self.coeffs.len > 0) {
+                self.coeffs[0] = ModintType.fromInt(0);
+            }
+        }
+
+        /// Compute ln of polynomial in-place: ln(P(x))
+        /// Requires: constant term of self is 1
+        pub fn ln(self: *Self, max_degree: usize) !void {
+            // Check constant term is 1
+            if (self.coeffs.len == 0 or self.coeffs[0].toInt() != 1) {
+                @panic("ln requires polynomial with constant term 1");
+            }
+
+            // Compute P'
+            var p_prime = try Self.fromSlice(self.gpa, self.coeffs, max_degree);
+            defer p_prime.deinit();
+            try p_prime.deriv(max_degree);
+
+            // Compute P^{-1}
+            var p_inv = try Self.fromSlice(self.gpa, self.coeffs, max_degree);
+            defer p_inv.deinit();
+            try p_inv.inv(max_degree);
+
+            // Multiply P' * P^{-1}
+            var result = try Self.mulHelper(self.gpa, p_prime, p_inv, max_degree);
+            defer result.deinit();
+
+            // Integrate
+            try result.integ(max_degree);
+
+            // Update self
+            try self.resize(max_degree);
+            @memcpy(self.coeffs, result.coeffs);
+        }
+
+        /// Compute exp of polynomial in-place: exp(P(x))
+        /// Requires: constant term of self is 0
+        pub fn exp(self: *Self, max_degree: usize) !void {
+            // Check constant term is 0
+            if (self.coeffs.len > 0 and self.coeffs[0].toInt() != 0) {
+                @panic("exp requires polynomial with constant term 0");
+            }
+
+            // Initialize result: 1, accurate up to x^0 (current_degree=0)
+            var result = try Self.one(self.gpa, 0);
+            defer result.deinit();
+            var current_degree: usize = 0;
+
+            while (current_degree < max_degree) {
+                const next_degree = @min(2 * current_degree + 1, max_degree);
+
+                // Compute ln(result) up to next_degree
+                var result_extended = try Self.fromSlice(self.gpa, result.coeffs, next_degree);
+                defer result_extended.deinit();
+                try result_extended.ln(next_degree);
+
+                // Compute (1 - ln(result) + self)
+                var one_poly = try Self.one(self.gpa, next_degree);
+                defer one_poly.deinit();
+
+                var self_extended = try Self.fromSlice(self.gpa, self.coeffs[0..@min(self.coeffs.len, next_degree + 1)], next_degree);
+                defer self_extended.deinit();
+
+                var tmp1 = try Self.subHelper(self.gpa, one_poly, result_extended, next_degree);
+                defer tmp1.deinit();
+
+                var tmp2 = try Self.addHelper(self.gpa, tmp1, self_extended, next_degree);
+                defer tmp2.deinit();
+
+                // Multiply with original result (truncated to current_degree)
+                var result_trunc = try Self.fromSlice(self.gpa, result.coeffs, current_degree);
+                defer result_trunc.deinit();
+                var tmp_trunc = try Self.fromSlice(self.gpa, tmp2.coeffs, next_degree);
+                defer tmp_trunc.deinit();
+
+                const new_result = try Self.mulHelper(self.gpa, result_trunc, tmp_trunc, next_degree);
+                result.deinit();
+                result = new_result;
+                current_degree = next_degree;
             }
 
             // Update self with result
@@ -348,5 +559,96 @@ test "fps pow" {
     const expected_pow = [_]Modint{ Modint.fromInt(1), Modint.fromInt(3), Modint.fromInt(3), Modint.fromInt(1), Modint.fromInt(0), Modint.fromInt(0), Modint.fromInt(0), Modint.fromInt(0), Modint.fromInt(0), Modint.fromInt(0), Modint.fromInt(0) };
     for (0..a.coeffs.len) |i| {
         try std.testing.expectEqual(expected_pow[i].toInt(), a.coeffs[i].toInt());
+    }
+}
+
+test "fps deriv and integ" {
+    const gpa = std.testing.allocator;
+    const FPS = FpsNtt(Modint998244353, 3);
+    const Modint = Modint998244353;
+
+    // Test derivative of 1 + x + x^2 + x^3 + x^4 + x^5
+    const a_coeffs = [_]Modint{ 
+        Modint.fromInt(1), 
+        Modint.fromInt(1), 
+        Modint.fromInt(1), 
+        Modint.fromInt(1), 
+        Modint.fromInt(1), 
+        Modint.fromInt(1) 
+    };
+    var a = try FPS.fromSlice(gpa, &a_coeffs, 5);
+    defer a.deinit();
+
+    // Compute derivative
+    var deriv_a = try FPS.fromSlice(gpa, a.coeffs, 4);
+    defer deriv_a.deinit();
+    try deriv_a.deriv(4);
+
+    // Expected derivative up to x^3: 1 + 2x + 3x^2 +4x^3
+    const expected_deriv = [_]Modint{
+        Modint.fromInt(1),
+        Modint.fromInt(2),
+        Modint.fromInt(3),
+        Modint.fromInt(4),
+        Modint.fromInt(0),
+    };
+    for (0..deriv_a.coeffs.len) |i| {
+        try std.testing.expectEqual(expected_deriv[i].toInt(), deriv_a.coeffs[i].toInt());
+    }
+}
+
+test "fps ln and exp" {
+    const gpa = std.testing.allocator;
+    const FPS = FpsNtt(Modint998244353, 3);
+    const Modint = Modint998244353;
+
+    // Test that exp(ln(1 + x)) = 1 + x
+    const a_coeffs = [_]Modint{ Modint.fromInt(1), Modint.fromInt(1) }; // 1 + x
+    var a = try FPS.fromSlice(gpa, &a_coeffs, 5);
+    defer a.deinit();
+
+    // Compute ln(a)
+    var ln_a = try FPS.fromSlice(gpa, a.coeffs, 5);
+    defer ln_a.deinit();
+    try ln_a.ln(5);
+
+    // Compute exp(ln(a))
+    var exp_ln_a = try FPS.fromSlice(gpa, ln_a.coeffs, 5);
+    defer exp_ln_a.deinit();
+    try exp_ln_a.exp(5);
+
+    // Should equal original a
+    for (0..a.coeffs.len) |i| {
+        try std.testing.expectEqual(a.coeffs[i].toInt(), exp_ln_a.coeffs[i].toInt());
+    }
+}
+
+test "fps pow with ln/exp" {
+    const gpa = std.testing.allocator;
+    const FPS = FpsNtt(Modint998244353, 3);
+    const Modint = Modint998244353;
+
+    // Test pow both ways
+    const a_coeffs = [_]Modint{ Modint.fromInt(1), Modint.fromInt(1) }; // 1 + x
+    var a1 = try FPS.fromSlice(gpa, &a_coeffs, 10);
+    defer a1.deinit();
+    try a1.pow(5, 10);
+
+    // Should be (1 + x)^5
+    const expected_pow = [_]Modint{
+        Modint.fromInt(1),
+        Modint.fromInt(5),
+        Modint.fromInt(10),
+        Modint.fromInt(10),
+        Modint.fromInt(5),
+        Modint.fromInt(1),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+    };
+    for (0..a1.coeffs.len) |i| {
+        try std.testing.expectEqual(expected_pow[i].toInt(), a1.coeffs[i].toInt());
     }
 }
