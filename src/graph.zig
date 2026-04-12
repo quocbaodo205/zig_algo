@@ -7,7 +7,8 @@ const string = @import("string.zig"); // Use for string graph only
 /// If node type is of Int, directly store inside the [n]ArrayList.
 /// If node type is of anything else, it need to provide a bidirectional hash function <-> int.
 /// Allocator: Local arena + heap based bump allocator. Free or reset after each use.
-pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_int, is_bidirectional: comptime_int) type {
+pub fn Graph(comptime node_type: type, comptime weight_type: type, max_n: comptime_int, comptime is_bidirectional: comptime_int) type {
+    _ = &is_bidirectional; // Ensure the parameter is considered used
     return struct {
         // Data structure for outside edge: an edge from u -w> v
         pub const E = struct {
@@ -22,35 +23,41 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
             w: weight_type,
         };
 
-        g: [n]std.ArrayList(GE),
-        al: allocator.BumpAllo(0, GE),
+        g: [max_n]std.ArrayList(GE),
+        gpa: std.mem.Allocator,
+        n: usize,
 
         const Self = @This();
 
         pub fn new() Self {
-            var self = Self{
+            return Self{
                 .g = undefined,
-                .al = .init(),
+                .gpa = undefined,
+                .n = undefined,
             };
-            for (0..n) |i| {
-                self.g[i] = std.ArrayList(GE).initCapacity(self.al.allocator(), 100) catch unreachable;
-            }
-            return self;
         }
 
-        pub fn fromEdgesUnweighted(edges: []const E) Self {
+        pub fn init(self: *Self, gpa: std.mem.Allocator, n: usize) void {
+            self.gpa = gpa;
+            self.n = n;
+            for (0..n) |i| {
+                self.g[i] = std.ArrayList(GE).initCapacity(gpa, 100) catch unreachable;
+            }
+        }
+
+        pub fn fromEdgesUnweighted(self: *Self, gpa: std.mem.Allocator, n: usize, edges: []const E) Self {
             @branchHint(.likely);
-            var self = Self.new();
+            self.init(gpa, n);
             // All array list is of different memory so cannot @splat.
             switch (@typeInfo(node_type)) {
                 .int => {
                     for (edges) |e| {
-                        self.g[e.u].append(self.al.allocator(), GE{
+                        self.g[e.u].append(gpa, GE{
                             .v = e.v,
                             .w = e.w,
                         }) catch unreachable;
                         if (is_bidirectional > 0) {
-                            self.g[e.v].append(self.al.allocator(), GE{
+                            self.g[e.v].append(gpa, GE{
                                 .v = e.u,
                                 .w = e.w,
                             }) catch unreachable;
@@ -60,12 +67,12 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
                 else => {
                     // Need to provide a hash / unhash function
                     for (edges) |e| {
-                        self.g[e.u.hash()].append(self.al.allocator(), GE{
+                        self.g[e.u.hash()].append(gpa, GE{
                             .v = e.v.hash(),
                             .w = e.w,
                         }) catch unreachable;
                         if (is_bidirectional > 0) {
-                            self.g[e.v.hash()].append(self.al.allocator(), GE{
+                            self.g[e.v.hash()].append(gpa, GE{
                                 .v = e.u.hash(),
                                 .w = e.w,
                             }) catch unreachable;
@@ -73,7 +80,7 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
                     }
                 },
             }
-            return self;
+            return self.*;
         }
 
         /// When using the graph, assume all usize. Convert outside via hash / unhash should needed.
@@ -84,14 +91,15 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
 
         /// Reset state but keep allocated memory for multiple test cases usage.
         pub fn reset(self: *Self) void {
-            for (0..n) |i| {
+            for (0..self.n) |i| {
                 self.g[i].shrinkRetainingCapacity(0);
             }
-            self.al.reset();
         }
 
         pub fn deinit(self: *Self) void {
-            self.al.deinit();
+            for (0..self.n) |i| {
+                self.g[i].deinit(self.gpa);
+            }
         }
 
         // ================================ Classic algo =================
@@ -101,7 +109,7 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
         pub fn makeDFS() type {
             @branchHint(.cold);
             return struct {
-                pub var used: [n]bool = @splat(false);
+                pub var used: [max_n]bool = @splat(false);
 
                 pub fn dfs(u: usize, g: *const Self) void {
                     used[u] = true;
@@ -117,9 +125,9 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
         /// Minimal BFS from starting vertices. Create a BFS struct that contains needed infomation.
         pub fn makeBFS() type {
             return struct {
-                var q = ds.Deque(usize, n * 10).new();
-                var in_queue: [n]bool = @splat(false);
-                var distance: [n]u32 = @splat(1000000000);
+                var q = ds.Deque(usize, max_n * 10).new();
+                var in_queue: [max_n]bool = @splat(false);
+                var distance: [max_n]u32 = @splat(1000000000);
 
                 fn bfs(starts: []const usize, g: *const Self) void {
                     for (starts) |u| {
@@ -148,9 +156,9 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
         /// Minimal topo structures. `order` should be get after calling `getTopoOrder`.
         pub fn makeTopo() type {
             return struct {
-                var state: [n]u8 = @splat(0);
+                var state: [max_n]u8 = @splat(0);
                 // Reverse order is the topo order
-                pub var order: [n]usize = undefined;
+                pub var order: [max_n]usize = undefined;
                 pub var size: usize = 0;
 
                 fn dfs(u: usize, g: *const Self) bool {
@@ -177,7 +185,7 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, n: comptime_i
                 /// Recursively get the topological order.
                 /// The `order` is the reverse order.
                 pub fn getTopoOrder(g: *const Self) bool {
-                    for (0..n) |u| {
+                    for (0..g.n) |u| {
                         if (state[u] == 0) {
                             const dfs_res = dfs(u, g);
                             if (!dfs_res) {
@@ -288,6 +296,10 @@ pub const StringVertices = struct {
 
 test "Test graph usize" {
     const max_n = 10;
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     const gtype = Graph(usize, void, max_n, 0);
     const E = gtype.E;
     var edges: [3]E = undefined;
@@ -306,7 +318,8 @@ test "Test graph usize" {
         .v = 4,
         .w = undefined,
     };
-    var g = gtype.fromEdgesUnweighted(&edges);
+    var g = gtype.new();
+    g = g.fromEdgesUnweighted(alloc, max_n, &edges);
     defer g.deinit();
 
     const DFS = gtype.makeDFS();
@@ -328,6 +341,10 @@ test "Test graph usize" {
 test "Test graph grid" {
     const n = 10;
     const m = 10;
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     const gridPointType = GridPoint(m);
     const gtype = Graph(gridPointType, void, n * m, 0);
     const E = gtype.E;
@@ -365,7 +382,8 @@ test "Test graph grid" {
         },
         .w = undefined,
     };
-    var g = gtype.fromEdgesUnweighted(&edges);
+    var g = gtype.new();
+    g = g.fromEdgesUnweighted(alloc, n * m, &edges);
     defer g.deinit();
 
     const DFS = gtype.makeDFS();
@@ -378,6 +396,10 @@ test "Test graph grid" {
 }
 
 test "Test graph string" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     var str_v = StringVertices.new();
     defer str_v.deinit();
     str_v.add("a");
@@ -402,7 +424,8 @@ test "Test graph string" {
         .v = str_v.newStrV("a"),
         .w = undefined,
     };
-    var g = gtype.fromEdgesUnweighted(&edges);
+    var g = gtype.new();
+    g = g.fromEdgesUnweighted(alloc, 10, &edges);
     defer g.deinit();
     const start: [1]usize = [1]usize{0};
     const BFS = gtype.makeBFS();

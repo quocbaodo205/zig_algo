@@ -1,4 +1,5 @@
 const std = @import("std");
+const utils = @import("utils.zig");
 
 /// Calculate combination C(n, k) using multiplicative formula to avoid overflow as much as possible.
 /// Time complexity: O(k)
@@ -31,28 +32,8 @@ pub fn starsAndBars(m: usize, n: usize) usize {
 
 /// Compute (base^exponent) mod modu using binary exponentiation.
 /// Time complexity: O(log exponent)
-pub fn pow_mod(base: usize, exponent: usize, modu: usize) usize {
-    var result: usize = 1;
-    var b = base % modu;
-    var e = exponent;
-
-    while (e > 0) {
-        if (e % 2 == 1) {
-            result = (result * b) % modu;
-        }
-        b = (b * b) % modu;
-        e = e / 2;
-    }
-
-    return result;
-}
-
-/// Compute modular inverse using Fermat's Little Theorem.
-/// Only valid when modu is prime.
-/// inv(x) = x^(modu-2) mod modu
-pub fn mod_inverse(x: usize, modu: usize) usize {
-    return pow_mod(x, modu - 2, modu);
-}
+pub const pow_mod = utils.pow_mod;
+pub const mod_inverse = utils.mod_inverse;
 
 /// Compute C(a, b) mod p where p is prime and 0 ≤ b ≤ a < p.
 /// Uses multiplicative formula and Fermat's Little Theorem for inverses.
@@ -106,6 +87,61 @@ pub fn comb_mod_lucas(n: usize, k: usize, p: usize) usize {
 /// Formula: C(M + N - 1, N) mod p
 pub fn starsAndBarsMod(m: usize, n: usize, p: usize) usize {
     return comb_mod_lucas(m + n - 1, n, p);
+}
+
+/// Precomputed factorials and inverse factorials for a given MontgomeryModint type
+pub fn CombinatoricModint(comptime MintType: type) type {
+    return struct {
+        const Self = @This();
+
+        fact: []MintType,
+        inv_fact: []MintType,
+        gpa: std.mem.Allocator,
+
+        pub fn init(gpa: std.mem.Allocator, max_n: u64) !Self {
+            var fact = try gpa.alloc(MintType, max_n + 1);
+            errdefer gpa.free(fact);
+
+            var inv_fact = try gpa.alloc(MintType, max_n + 1);
+            errdefer gpa.free(inv_fact);
+
+            fact[0] = MintType.fromInt(1);
+            for (1..max_n + 1) |i| {
+                fact[i] = fact[i - 1].mul(MintType.fromInt(@intCast(i)));
+            }
+
+            inv_fact[max_n] = blk: {
+                const inv = utils.pow_mod_big(fact[max_n].toInt(), MintType.MOD - 2, MintType.MOD);
+                break :blk MintType.fromInt(@intCast(inv));
+            };
+            var i: u64 = max_n;
+            while (i >= 1) : (i -= 1) {
+                inv_fact[i - 1] = inv_fact[i].mul(MintType.fromInt(@intCast(i)));
+            }
+
+            return Self{
+                .fact = fact,
+                .inv_fact = inv_fact,
+                .gpa = gpa,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.gpa.free(self.fact);
+            self.gpa.free(self.inv_fact);
+        }
+
+        pub fn comb(self: *const Self, n: u64, k: u64) MintType {
+            if (k > n) return MintType.fromInt(0);
+            if (k == 0 or k == n) return MintType.fromInt(1);
+            return self.fact[n].mul(self.inv_fact[k]).mul(self.inv_fact[n - k]);
+        }
+
+        /// Calculate the number of ways to choose N items from M types with infinite quantity (stars and bars).
+        pub fn starsAndBars(self: *const Self, m: u64, n: u64) MintType {
+            return self.comb(m + n - 1, n);
+        }
+    };
 }
 
 test "combinatorics" {

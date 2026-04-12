@@ -1,25 +1,10 @@
 const std = @import("std");
-const math = std.math;
-
-/// Helper to compute (base^exponent) mod modu using binary exponentiation (comptime)
-fn pow_mod_comptime(base: comptime_int, exponent: comptime_int, modu: comptime_int) comptime_int {
-    var b = base % modu;
-    var res: comptime_int = 1;
-    var e = exponent;
-    while (e > 0) {
-        if (e % 2 == 1) {
-            res = (res * b) % modu;
-        }
-        b = (b * b) % modu;
-        e = e / 2;
-    }
-    return res;
-}
+const utils = @import("utils.zig");
 
 /// Montgomery modular integer for a given prime modulus MOD (32-bit, uses R=2^32 with u64 intermediates)
 pub fn MontgomeryModint(comptime MOD_ARG: u32) type {
     // Precompute R2_mod_M = (2^64) mod MOD_ARG (since R = 2^32, R² = 2^64)
-    const R2_mod_M: u32 = @intCast(pow_mod_comptime(2, 64, MOD_ARG));
+    const R2_mod_M: u32 = @intCast(utils.pow_mod_comptime(2, 64, MOD_ARG));
     const niv: u32 = blk: {
         // Find M' such that MOD * M' ≡ -1 (mod 2^32), then niv = -M'
         // Use Newton's method: x_{k+1} = x_k * (2 - MOD * x_k) mod 2^32
@@ -28,7 +13,7 @@ pub fn MontgomeryModint(comptime MOD_ARG: u32) type {
         while (i < 5) : (i += 1) { // 5 iterations are enough for 32 bits
             x = x *% (2 -% MOD_ARG *% x);
         }
-        break :blk -% x;
+        break :blk -%x;
     };
 
     return struct {
@@ -74,11 +59,29 @@ pub fn MontgomeryModint(comptime MOD_ARG: u32) type {
         pub fn neg(a: Self) Self {
             return Self{ .val = if (a.val == 0) 0 else MOD_ARG - a.val };
         }
+
+        pub fn inv(a: Self) Self {
+            // Fermat's little theorem: inv(x) = x^(MOD-2) mod MOD
+            const exponent = MOD_ARG - 2;
+            var result = Self.fromInt(1);
+            var base = a;
+            var e = exponent;
+            while (e > 0) {
+                if (e & 1 == 1) {
+                    result = result.mul(base);
+                }
+                base = base.mul(base);
+                e >>= 1;
+            }
+            return result;
+        }
     };
 }
 
 /// Predefined MontgomeryModint for modulus 998244353 (32-bit, preferred)
 pub const Modint998244353 = MontgomeryModint(998244353);
+/// Predefined MontgomeryModint for modulus 1000000007 (32-bit, common in programming contests)
+pub const Modint1000000007 = MontgomeryModint(1000000007);
 
 test "montgomery modint" {
     const M = Modint998244353;

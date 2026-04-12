@@ -50,6 +50,24 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
             return result;
         }
 
+        /// Create the polynomial with all coefficients 1: 1 + x + x² + ... + x^max_degree
+        pub fn allOnes(gpa: std.mem.Allocator, max_degree: usize) !Self {
+            var result = try Self.init(gpa, max_degree);
+            for (0..result.coeffs.len) |i| {
+                result.coeffs[i] = ModintType.fromInt(1);
+            }
+            return result;
+        }
+
+        /// Create the polynomial with coefficients 0,1,2,...,max_degree: 0 + 1x + 2x² + ... + max_degree x^max_degree
+        pub fn increasing(gpa: std.mem.Allocator, max_degree: usize) !Self {
+            var result = try Self.init(gpa, max_degree);
+            for (0..result.coeffs.len) |i| {
+                result.coeffs[i] = ModintType.fromInt(@intCast(i));
+            }
+            return result;
+        }
+
         /// Free allocated memory
         pub fn deinit(self: Self) void {
             self.gpa.free(self.coeffs);
@@ -91,15 +109,15 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
             var a_copy = try Self.fromSlice(a.gpa, a.coeffs, max_degree);
             defer a_copy.deinit();
 
-            if (use_ntt) {
-                // Use NTT convolution
+            if (use_ntt and max_degree > 0) {
+                // Use NTT convolution only for max_degree > 0
                 const conv = try Ntt.convolution(a.gpa, a_copy.coeffs, b.coeffs);
                 defer a.gpa.free(conv);
                 try a.resize(max_degree);
                 const copy_len = @min(conv.len, a.coeffs.len);
                 @memcpy(a.coeffs[0..copy_len], conv[0..copy_len]);
             } else {
-                // Naive O(n²) multiplication
+                // Naive O(n²) multiplication (for max_degree 0 or use_ntt false)
                 var result = try Self.init(a.gpa, max_degree);
                 defer result.deinit();
                 for (0..a_copy.coeffs.len) |i| {
@@ -117,6 +135,48 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
                 try a.resize(max_degree);
                 @memcpy(a.coeffs, result.coeffs);
             }
+        }
+
+        /// Square the FPS in-place: a *= a, truncating to max_degree
+        pub fn square(a: *Self, max_degree: usize) !void {
+            var a_copy = try Self.fromSlice(a.gpa, a.coeffs, max_degree);
+            defer a_copy.deinit();
+            try a.mul(a_copy, max_degree);
+        }
+
+        /// Compute sum of pairwise convolutions of the given FPS: sum_{i<j} fps[i] * fps[j]
+        /// Returns a new FPS, caller must free with deinit()
+        pub fn sumPairwiseConvolution(gpa: std.mem.Allocator, fps_list: []const Self, max_degree: usize) !Self {
+            // Compute S = sum(fps_list)
+            var S = try Self.zero(gpa, max_degree);
+            errdefer S.deinit();
+            for (fps_list) |cfps| {
+                try S.add(cfps, max_degree);
+            }
+
+            // Compute S^2
+            try S.square(max_degree);
+
+            // Compute sum_squares = sum(fps^2)
+            var sum_squares = try Self.zero(gpa, max_degree);
+            errdefer sum_squares.deinit();
+            for (fps_list) |cfps| {
+                var fps_sq = try Self.fromSlice(gpa, cfps.coeffs, max_degree);
+                defer fps_sq.deinit();
+                try fps_sq.square(max_degree);
+                try sum_squares.add(fps_sq, max_degree);
+            }
+
+            // Compute (S^2 - sum_squares)
+            try S.sub(sum_squares, max_degree);
+
+            // Multiply by 1/2
+            const inv2 = ModintType.fromInt(2).inv();
+            for (S.coeffs) |*c| {
+                c.* = c.*.mul(inv2);
+            }
+
+            return S;
         }
 
         /// Compute inverse of FPS in-place modulo x^(max_degree + 1)
@@ -278,7 +338,7 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
                 inv_cache = new_inv;
                 inv_cache_gpa = gpa;
             }
-            return inv_cache[1..n+1];
+            return inv_cache[1 .. n + 1];
         }
 
         /// Compute derivative of polynomial in-place: P'(x)
@@ -568,14 +628,7 @@ test "fps deriv and integ" {
     const Modint = Modint998244353;
 
     // Test derivative of 1 + x + x^2 + x^3 + x^4 + x^5
-    const a_coeffs = [_]Modint{ 
-        Modint.fromInt(1), 
-        Modint.fromInt(1), 
-        Modint.fromInt(1), 
-        Modint.fromInt(1), 
-        Modint.fromInt(1), 
-        Modint.fromInt(1) 
-    };
+    const a_coeffs = [_]Modint{ Modint.fromInt(1), Modint.fromInt(1), Modint.fromInt(1), Modint.fromInt(1), Modint.fromInt(1), Modint.fromInt(1) };
     var a = try FPS.fromSlice(gpa, &a_coeffs, 5);
     defer a.deinit();
 
@@ -651,4 +704,106 @@ test "fps pow with ln/exp" {
     for (0..a1.coeffs.len) |i| {
         try std.testing.expectEqual(expected_pow[i].toInt(), a1.coeffs[i].toInt());
     }
+}
+
+test "fps square" {
+    const gpa = std.testing.allocator;
+    const FPS = FpsNtt(Modint998244353, 3);
+    const Modint = Modint998244353;
+
+    // Test (1 + x)^2 = 1 + 2x + x²
+    const a_coeffs = [_]Modint{ Modint.fromInt(1), Modint.fromInt(1) };
+    var a = try FPS.fromSlice(gpa, &a_coeffs, 10);
+    defer a.deinit();
+    try a.square(10);
+
+    const expected = [_]Modint{
+        Modint.fromInt(1),
+        Modint.fromInt(2),
+        Modint.fromInt(1),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+    };
+    for (0..a.coeffs.len) |i| {
+        try std.testing.expectEqual(expected[i].toInt(), a.coeffs[i].toInt());
+    }
+}
+
+test "fps sum pairwise convolution" {
+    const gpa = std.heap.page_allocator;
+    const FPS = FpsNtt(Modint998244353, 3);
+    const Modint = Modint998244353;
+
+    // Test with three polynomials: f1 = 1, f2 = x, f3 = x²
+    // Pairwise products: f1*f2 = x, f1*f3 = x², f2*f3 = x³
+    // Sum: x + x² + x³
+    var f1 = try FPS.one(gpa, 10);
+    defer f1.deinit();
+    var f2 = try FPS.zero(gpa, 10);
+    defer f2.deinit();
+    f2.coeffs[1] = Modint.fromInt(1);
+    var f3 = try FPS.zero(gpa, 10);
+    defer f3.deinit();
+    f3.coeffs[2] = Modint.fromInt(1);
+
+    const fps_list = [_]FPS{ f1, f2, f3 };
+    var result = try FPS.sumPairwiseConvolution(gpa, &fps_list, 10);
+    defer result.deinit();
+
+    const expected = [_]Modint{
+        Modint.fromInt(0),
+        Modint.fromInt(1),
+        Modint.fromInt(1),
+        Modint.fromInt(1),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+        Modint.fromInt(0),
+    };
+    for (0..result.coeffs.len) |i| {
+        try std.testing.expectEqual(expected[i].toInt(), result.coeffs[i].toInt());
+    }
+}
+
+test "fps mul max degree 0" {
+    const gpa = std.testing.allocator;
+    const FPS = FpsNtt(Modint998244353, 3);
+    const Modint = Modint998244353;
+
+    // Create two FPS with max_degree = 0, coeff 0 equal to 1
+    var f1 = try FPS.init(gpa, 0);
+    defer f1.deinit();
+    f1.coeffs[0] = Modint.fromInt(1);
+
+    var f2 = try FPS.init(gpa, 0);
+    defer f2.deinit();
+    f2.coeffs[0] = Modint.fromInt(1);
+
+    // Multiply them with max_degree = 0
+    try f1.mul(f2, 0);
+
+    // Expected: 1 * 1 = 1
+    const expected = [_]Modint{
+        Modint.fromInt(1),
+    };
+    for (0..f1.coeffs.len) |i| {
+        try std.testing.expectEqual(expected[i].toInt(), f1.coeffs[i].toInt());
+    }
+}
+
+test "modint inv" {
+    const Modint = Modint998244353;
+    const a = Modint.fromInt(2);
+    const inv_a = a.inv();
+    const product = a.mul(inv_a);
+    try std.testing.expectEqual(@as(u32, 1), product.toInt());
 }

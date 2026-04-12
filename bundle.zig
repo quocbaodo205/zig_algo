@@ -1,87 +1,4 @@
 const std = @import("std");
-const modint = struct {
-const math = std.math;
-
-/// Helper to compute (base^exponent) mod modu using binary exponentiation (comptime)
-fn pow_mod_comptime(base: comptime_int, exponent: comptime_int, modu: comptime_int) comptime_int {
-    var b = base % modu;
-    var res: comptime_int = 1;
-    var e = exponent;
-    while (e > 0) {
-        if (e % 2 == 1) {
-            res = (res * b) % modu;
-        }
-        b = (b * b) % modu;
-        e = e / 2;
-    }
-    return res;
-}
-
-/// Montgomery modular integer for a given prime modulus MOD (32-bit, uses R=2^32 with u64 intermediates)
-pub fn MontgomeryModint(comptime MOD_ARG: u32) type {
-    // Precompute R2_mod_M = (2^64) mod MOD_ARG (since R = 2^32, R² = 2^64)
-    const R2_mod_M: u32 = @intCast(pow_mod_comptime(2, 64, MOD_ARG));
-    const niv: u32 = blk: {
-        // Find M' such that MOD * M' ≡ -1 (mod 2^32), then niv = -M'
-        // Use Newton's method: x_{k+1} = x_k * (2 - MOD * x_k) mod 2^32
-        var x: u32 = 1; // Initial guess
-        var i: usize = 0;
-        while (i < 5) : (i += 1) { // 5 iterations are enough for 32 bits
-            x = x *% (2 -% MOD_ARG *% x);
-        }
-        break :blk -% x;
-    };
-
-    return struct {
-        pub const MOD = MOD_ARG;
-        val: u32,
-
-        const Self = @This();
-
-        /// Convert a normal integer to Montgomery form
-        pub fn fromInt(n: u32) Self {
-            return Self{ .val = montgomeryMult(n, R2_mod_M) };
-        }
-
-        /// Convert back to a normal integer
-        pub fn toInt(self: Self) u32 {
-            return montgomeryMult(self.val, 1);
-        }
-
-        /// Montgomery multiplication: (a * b) / R mod MOD, R=2^32
-        inline fn montgomeryMult(a: u32, b: u32) u32 {
-            const t: u64 = @as(u64, a) * b;
-            const t_low: u32 = @as(u32, @truncate(t));
-            const m: u32 = t_low *% niv;
-            const t_plus_m_times_MOD: u64 = t + @as(u64, m) * MOD_ARG;
-            const u: u32 = @intCast(t_plus_m_times_MOD >> 32);
-            return if (u >= MOD_ARG) u - MOD_ARG else u;
-        }
-
-        pub fn add(a: Self, b: Self) Self {
-            const s: u64 = @as(u64, a.val) + b.val;
-            return Self{ .val = @intCast(if (s >= MOD_ARG) s - MOD_ARG else s) };
-        }
-
-        pub fn sub(a: Self, b: Self) Self {
-            const d: u64 = @as(u64, a.val) + MOD_ARG - b.val;
-            return Self{ .val = @intCast(if (d >= MOD_ARG) d - MOD_ARG else d) };
-        }
-
-        pub fn mul(a: Self, b: Self) Self {
-            return Self{ .val = montgomeryMult(a.val, b.val) };
-        }
-
-        pub fn neg(a: Self) Self {
-            return Self{ .val = if (a.val == 0) 0 else MOD_ARG - a.val };
-        }
-    };
-}
-
-/// Predefined MontgomeryModint for modulus 998244353 (32-bit, preferred)
-pub const Modint998244353 = MontgomeryModint(998244353);
-
-};
 const allocator = struct {
 const heap = std.heap;
 const Allocator = std.mem.Allocator;
@@ -161,132 +78,676 @@ pub fn BumpAllo(num_elements: comptime_int, comptime T: type) type {
     };
 }
 };
-const combinatorics = struct {
+const ds = struct {
 
-/// Calculate combination C(n, k) using multiplicative formula to avoid overflow as much as possible.
-/// Time complexity: O(k)
-/// Space complexity: O(1)
-pub fn comb(n: usize, k: usize) usize {
-    if (k > n) return 0;
-    if (k == 0 or k == n) return 1;
+// =============================== Data structure in Zig ====================
 
-    // Take advantage of symmetry C(n, k) = C(n, n-k)
-    const k_min = if (k > n - k) n - k else k;
+/// Ring buffer (deque) with upfront max element it can hold.
+/// Not growable and panic if not work
+pub fn Deque(comptime T: type, max_n: comptime_int) type {
+    return struct {
+        arr: [max_n]?T,
+        // [l..r)
+        l: usize,
+        r: usize,
+        len: usize,
 
-    var res: usize = 1;
-    var i: usize = 1;
-    while (i <= k_min) : (i += 1) {
-        res = res * (n - k_min + i) / i;
-    }
+        const Self = @This();
 
-    return res;
-}
-
-/// Calculate the number of ways to choose N items from M types with infinite quantity (stars and bars).
-/// Formula: C(M + N - 1, N)
-pub fn starsAndBars(m: usize, n: usize) usize {
-    return comb(m + n - 1, n);
-}
-
-// ==========================================
-// Modular combinatorics for large numbers
-// ==========================================
-
-/// Compute (base^exponent) mod modu using binary exponentiation.
-/// Time complexity: O(log exponent)
-pub fn pow_mod(base: usize, exponent: usize, modu: usize) usize {
-    var result: usize = 1;
-    var b = base % modu;
-    var e = exponent;
-
-    while (e > 0) {
-        if (e % 2 == 1) {
-            result = (result * b) % modu;
-        }
-        b = (b * b) % modu;
-        e = e / 2;
-    }
-
-    return result;
-}
-
-/// Compute modular inverse using Fermat's Little Theorem.
-/// Only valid when modu is prime.
-/// inv(x) = x^(modu-2) mod modu
-pub fn mod_inverse(x: usize, modu: usize) usize {
-    return pow_mod(x, modu - 2, modu);
-}
-
-/// Compute C(a, b) mod p where p is prime and 0 ≤ b ≤ a < p.
-/// Uses multiplicative formula and Fermat's Little Theorem for inverses.
-pub fn comb_mod_small(a: usize, b: usize, p: usize) usize {
-    if (b > a) return 0;
-    if (b == 0 or b == a) return 1;
-
-    // Use symmetry to minimize calculations
-    const k = if (b > a - b) a - b else b;
-
-    var numerator: usize = 1;
-    var denominator: usize = 1;
-
-    var i: usize = 0;
-    while (i < k) : (i += 1) {
-        numerator = (numerator * (a - i)) % p;
-        denominator = (denominator * (i + 1)) % p;
-    }
-
-    return (numerator * mod_inverse(denominator, p)) % p;
-}
-
-/// Compute C(n, k) mod p where p is prime using Lucas Theorem.
-/// Works for very large n and k (up to 1e18 or more).
-pub fn comb_mod_lucas(n: usize, k: usize, p: usize) usize {
-    if (k > n) return 0;
-    if (k == 0 or k == n) return 1;
-
-    var result: usize = 1;
-    var a = n;
-    var b = k;
-
-    while (a > 0 or b > 0) {
-        const ai = a % p;
-        const bi = b % p;
-
-        if (bi > ai) {
-            return 0;
+        pub fn new() Self {
+            return Self{
+                // Remember this, very useful!
+                .arr = [_]?T{null} ** max_n,
+                .l = 0,
+                .r = 0,
+                .len = 0,
+            };
         }
 
-        result = (result * comb_mod_small(ai, bi, p)) % p;
+        pub fn front(self: *Self) ?T {
+            return self.arr[self.l];
+        }
 
-        a = a / p;
-        b = b / p;
+        pub fn back(self: Self) ?T {
+            const new_r = if (self.r == 0)
+                max_n - 1
+            else
+                self.r - 1;
+            return self.arr[new_r];
+        }
+
+        /// Push an element to the back of the deque
+        pub fn push_back(self: *Self, element: *const T) void {
+            // Add at r
+            if (self.arr[self.r] != null) {
+                @panic("Array filled and cannot add more element!");
+            }
+            self.arr[self.r] = element.*; // Deref to copy inside
+            self.r += 1;
+            self.len += 1;
+            if (self.r >= max_n) self.r = 0;
+        }
+
+        /// Pop return and element from the back of the deque
+        pub fn pop_back(self: *Self) ?T {
+            // Get at r-1 and move back
+            const new_r = if (self.r == 0)
+                max_n - 1
+            else
+                self.r - 1;
+            if (self.arr[new_r] == null) {
+                return null;
+            }
+            const pop_data = self.arr[new_r].?;
+            self.arr[new_r] = null;
+            self.r = new_r;
+            self.len -= 1;
+            return pop_data;
+        }
+
+        /// Push an element to the front of the deque
+        pub fn push_front(self: *Self, element: *const T) void {
+            // Add at l-1 and move l back
+            const new_l = if (self.l == 0)
+                max_n - 1
+            else
+                self.l - 1;
+            if (self.arr[new_l] != null) {
+                @panic("Array filled and cannot add more element!");
+            }
+            self.arr[new_l] = element.*; // Deref to copy inside
+            self.l = new_l;
+            self.len += 1;
+        }
+
+        /// Pop return and element from the front of the deque
+        pub fn pop_front(self: *Self) ?T {
+            // Get at l and move l forward
+            if (self.arr[self.l] == null) {
+                return null;
+            }
+            const pop_data = self.arr[self.l].?;
+            self.arr[self.l] = null;
+            self.len -= 1;
+            self.l += 1;
+            if (self.l >= max_n) {
+                self.l = 0;
+            }
+            return pop_data;
+        }
+
+        /// Print the queue.
+        pub fn print(self: Self) void {
+            std.debug.print("[", .{});
+            var i = self.l;
+            while (i != self.r) {
+                std.debug.print("{any}, ", .{self.arr[i].?});
+                i += 1;
+                if (i == max_n) i = 0;
+            }
+            std.debug.print("]\n", .{});
+        }
+    };
+}
+
+// ====================================== UsizeSet based on std.Treap ==============================================
+
+/// A set of usize values backed by std.Treap, using an allocator for node management.
+pub const UsizeSet = struct {
+    const Treap = std.Treap;
+    const InnerTreap = Treap(usize, std.math.order);
+    const Node = InnerTreap.Node;
+
+    inner: InnerTreap = .{},
+    gpa: std.mem.Allocator,
+    len: usize = 0,
+
+    const Self = @This();
+
+    /// Initialize a new UsizeSet with the given allocator.
+    pub fn init(gpa: std.mem.Allocator) Self {
+        return Self{ .gpa = gpa };
     }
 
-    return result;
-}
+    /// Deinitialize the UsizeSet and free all allocated nodes.
+    pub fn deinit(self: *Self) void {
+        // Iterate through all nodes and free them
+        var iter = self.inner.inorderIterator();
+        while (iter.next()) |node| {
+            self.gpa.destroy(node);
+        }
+        self.inner = .{};
+        self.len = 0;
+    }
 
-/// Calculate the number of ways to choose N items from M types with infinite quantity (stars and bars) modulo p.
-/// Formula: C(M + N - 1, N) mod p
-pub fn starsAndBarsMod(m: usize, n: usize, p: usize) usize {
-    return comb_mod_lucas(m + n - 1, n, p);
-}
+    /// Add a value to the set. Does nothing if the value is already present.
+    pub fn add(self: *Self, value: usize) !void {
+        var entry = self.inner.getEntryFor(value);
+        if (entry.node == null) {
+            const new_node = try self.gpa.create(Node);
+            entry.set(new_node);
+            self.len += 1;
+        }
+    }
+
+    /// Check if a value is present in the set.
+    pub fn contains(self: *Self, value: usize) bool {
+        return self.inner.getEntryFor(value).node != null;
+    }
+
+    /// Remove a value from the set. Does nothing if the value is not present.
+    pub fn remove(self: *Self, value: usize) void {
+        var entry = self.inner.getEntryFor(value);
+        if (entry.node) |node| {
+            entry.set(null);
+            self.gpa.destroy(node);
+            self.len -= 1;
+        }
+    }
+
+    /// Get the number of elements in the set.
+    pub fn getLen(self: *const Self) usize {
+        return self.len;
+    }
+
+    /// Get the minimum value in the set. Returns null if the set is empty.
+    pub fn getMin(self: *Self) ?usize {
+        return if (self.inner.getMin()) |node| node.key else null;
+    }
+
+    /// Get the maximum value in the set. Returns null if the set is empty.
+    pub fn getMax(self: *Self) ?usize {
+        return if (self.inner.getMax()) |node| node.key else null;
+    }
+
+    /// In-order iterator over the set's values
+    pub const Iterator = struct {
+        inner: InnerTreap.InorderIterator,
+
+        pub fn next(it: *Iterator) ?usize {
+            return if (it.inner.next()) |node| node.key else null;
+        }
+    };
+
+    /// Get an iterator over the set's values
+    pub fn iterator(self: *Self) Iterator {
+        return Iterator{ .inner = self.inner.inorderIterator() };
+    }
+};
 
 };
-const ntt = struct {
+const string = struct {
+/// String data structures and algorithm in zig.
 
-// Const pow_mod and mod_inverse for precomputations
-fn pow_mod_const(base: comptime_int, exp: comptime_int, m: comptime_int) comptime_int {
-    var b = base % m;
+/// Allocator: Heap + arena since we don't know how many things.
+pub fn Trie(
+    child_num: comptime_int,
+    norm: comptime_int, // First char to normalize to 0
+    T: anytype,
+) type {
+    const TrieNode = struct {
+        const Self = @This();
+
+        val: T,
+        children: [child_num]?*Self,
+
+        pub fn new() Self {
+            return Self{
+                .children = [_]?*Self{null} ** child_num,
+                .val = T.init(),
+            };
+        }
+    };
+
+    return struct {
+        head: *TrieNode,
+        al: allocator.BumpAllo(0, TrieNode),
+
+        const Self = @This();
+
+        pub fn new() Self {
+            var self = Self{
+                .head = undefined,
+                .al = .init(),
+            };
+            self.head = self.al.create() catch unreachable;
+            self.head.* = TrieNode.new();
+            return self;
+        }
+
+        pub fn add(self: *Self, data: []const u8) bool {
+            var cur_node = self.head;
+            for (data) |c| {
+                const cc = c - norm;
+                if (cur_node.children[cc] == null) {
+                    const new_ptr = self.al.create() catch unreachable;
+                    new_ptr.* = TrieNode.new();
+                    cur_node.children[cc] = new_ptr;
+                }
+                // Value combine with add with is_end as a boolean
+                if (!cur_node.val.add(false)) {
+                    return false;
+                }
+                cur_node = cur_node.children[cc].?;
+            }
+            return cur_node.val.add(true); // Process the last missing node
+        }
+
+        /// Return the value and the size in data that we gone through,
+        /// since we might not gone through the whole data.
+        /// The last index is size - 1.
+        pub fn get(self: Self, data: []const u8) struct { T, usize } {
+            var cur_node = self.head;
+            for (data, 0..) |c, i| {
+                const cc = c - norm;
+                if (cur_node.children[cc] == null) {
+                    return .{ cur_node.val, i };
+                }
+                cur_node = cur_node.children[cc].?;
+            }
+            return .{ cur_node.val, data.len - 1 };
+        }
+
+        pub fn reset(self: *Self) void {
+            self.al.reset();
+            self.head = self.al.create() catch unreachable;
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.al.deinit();
+        }
+    };
+}
+
+/// Prefix trie node support count how many with this prefix and is full string
+pub const PrefixTrieNodeType = struct {
+    is_full_str: bool,
+    prefix_count: u32,
+
+    const Self = @This();
+
+    pub fn init() Self {
+        return Self{
+            .is_full_str = false,
+            .prefix_count = 0,
+        };
+    }
+
+    pub fn add(self: *Self, is_end: bool) bool {
+        self.prefix_count += 1;
+        self.is_full_str |= is_end;
+        return true;
+    }
+};
+
+/// Assign each string with a unique hash (incremental counter).
+/// You will have to manage the usize -> string mapping elsewhere.
+pub const UniqueHashTrieNodeType = struct {
+    var counter: usize = 0; // Global incremental counter
+
+    value: usize,
+
+    const Self = @This();
+
+    pub fn init() Self {
+        return Self{
+            .value = 0,
+        };
+    }
+
+    pub fn add(self: *Self, is_end: bool) bool {
+        if (!is_end) {
+            return true; // Doesn't do anything...
+        }
+        if (self.value == 0) {
+            self.value = counter;
+            counter += 1;
+            return true;
+        }
+        return false;
+    }
+};
+
+};
+const graph = struct {
+
+/// Graph with dynamic node type. Underline is an adj list of usize.
+/// If node type is of Int, directly store inside the [n]ArrayList.
+/// If node type is of anything else, it need to provide a bidirectional hash function <-> int.
+/// Allocator: Local arena + heap based bump allocator. Free or reset after each use.
+pub fn Graph(comptime node_type: type, comptime weight_type: type, max_n: comptime_int, comptime is_bidirectional: comptime_int) type {
+    _ = &is_bidirectional; // Ensure the parameter is considered used
+    return struct {
+        // Data structure for outside edge: an edge from u -w> v
+        pub const E = struct {
+            u: node_type,
+            v: node_type,
+            w: weight_type,
+        };
+
+        // Data structure for a graph edge
+        pub const GE = struct {
+            v: usize,
+            w: weight_type,
+        };
+
+        g: [max_n]std.ArrayList(GE),
+        gpa: std.mem.Allocator,
+        n: usize,
+
+        const Self = @This();
+
+        pub fn new() Self {
+            return Self{
+                .g = undefined,
+                .gpa = undefined,
+                .n = undefined,
+            };
+        }
+
+        pub fn init(self: *Self, gpa: std.mem.Allocator, n: usize) void {
+            self.gpa = gpa;
+            self.n = n;
+            for (0..n) |i| {
+                self.g[i] = std.ArrayList(GE).initCapacity(gpa, 100) catch unreachable;
+            }
+        }
+
+        pub fn fromEdgesUnweighted(self: *Self, gpa: std.mem.Allocator, n: usize, edges: []const E) Self {
+            @branchHint(.likely);
+            self.init(gpa, n);
+            // All array list is of different memory so cannot @splat.
+            switch (@typeInfo(node_type)) {
+                .int => {
+                    for (edges) |e| {
+                        self.g[e.u].append(gpa, GE{
+                            .v = e.v,
+                            .w = e.w,
+                        }) catch unreachable;
+                        if (is_bidirectional > 0) {
+                            self.g[e.v].append(gpa, GE{
+                                .v = e.u,
+                                .w = e.w,
+                            }) catch unreachable;
+                        }
+                    }
+                },
+                else => {
+                    // Need to provide a hash / unhash function
+                    for (edges) |e| {
+                        self.g[e.u.hash()].append(gpa, GE{
+                            .v = e.v.hash(),
+                            .w = e.w,
+                        }) catch unreachable;
+                        if (is_bidirectional > 0) {
+                            self.g[e.v.hash()].append(gpa, GE{
+                                .v = e.u.hash(),
+                                .w = e.w,
+                            }) catch unreachable;
+                        }
+                    }
+                },
+            }
+            return self.*;
+        }
+
+        /// When using the graph, assume all usize. Convert outside via hash / unhash should needed.
+        pub fn get(self: *const Self, u: usize) []GE {
+            @branchHint(.likely);
+            return self.g[u].items;
+        }
+
+        /// Reset state but keep allocated memory for multiple test cases usage.
+        pub fn reset(self: *Self) void {
+            for (0..self.n) |i| {
+                self.g[i].shrinkRetainingCapacity(0);
+            }
+        }
+
+        pub fn deinit(self: *Self) void {
+            for (0..self.n) |i| {
+                self.g[i].deinit(self.gpa);
+            }
+        }
+
+        // ================================ Classic algo =================
+
+        /// Minimal DFS from a vertex. Create a DFS struct that contains needed infomation.
+        /// Probably never use, usually for reference only so we can expand.
+        pub fn makeDFS() type {
+            @branchHint(.cold);
+            return struct {
+                pub var used: [max_n]bool = @splat(false);
+
+                pub fn dfs(u: usize, g: *const Self) void {
+                    used[u] = true;
+                    for (g.get(u)) |*ge| {
+                        if (!used[ge.v]) {
+                            dfs(ge.v, g);
+                        }
+                    }
+                }
+            };
+        }
+
+        /// Minimal BFS from starting vertices. Create a BFS struct that contains needed infomation.
+        pub fn makeBFS() type {
+            return struct {
+                var q = ds.Deque(usize, max_n * 10).new();
+                var in_queue: [max_n]bool = @splat(false);
+                var distance: [max_n]u32 = @splat(1000000000);
+
+                fn bfs(starts: []const usize, g: *const Self) void {
+                    for (starts) |u| {
+                        q.push_back(&u);
+                        distance[u] = 0;
+                        in_queue[u] = true;
+                    }
+                    while (true) {
+                        if (q.pop_front()) |u| {
+                            for (g.get(u)) |*ge| {
+                                if (in_queue[ge.v]) {
+                                    continue;
+                                }
+                                distance[ge.v] = distance[u] + 1;
+                                q.push_back(&ge.v);
+                                in_queue[ge.v] = true;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            };
+        }
+
+        /// Minimal topo structures. `order` should be get after calling `getTopoOrder`.
+        pub fn makeTopo() type {
+            return struct {
+                var state: [max_n]u8 = @splat(0);
+                // Reverse order is the topo order
+                pub var order: [max_n]usize = undefined;
+                pub var size: usize = 0;
+
+                fn dfs(u: usize, g: *const Self) bool {
+                    state[u] = 1;
+                    for (g.get(u)) |*ge| {
+                        if (state[ge.v] == 1) {
+                            // Loop found
+                            return false;
+                        }
+                        if (state[ge.v] == 0) {
+                            // New vertext
+                            const child_dfs_res = dfs(ge.v, g);
+                            if (!child_dfs_res) {
+                                return false;
+                            }
+                        }
+                    }
+                    state[u] = 2;
+                    order[size] = u;
+                    size += 1;
+                    return true;
+                }
+
+                /// Recursively get the topological order.
+                /// The `order` is the reverse order.
+                pub fn getTopoOrder(g: *const Self) bool {
+                    for (0..g.n) |u| {
+                        if (state[u] == 0) {
+                            const dfs_res = dfs(u, g);
+                            if (!dfs_res) {
+                                return false;
+                            }
+                        }
+                    }
+                    return true;
+                }
+            };
+        }
+    };
+}
+
+// ================================== Vertex types ==============================
+
+/// GridPoint that provide hash / unhash to be able to use as a graph.
+/// y = 0..m
+pub fn GridPoint(m: comptime_int) type {
+    return struct {
+        x: usize,
+        y: usize,
+
+        const Self = @This();
+
+        pub fn hash(self: *const Self) usize {
+            return self.x * m + self.y;
+        }
+
+        pub fn unhash(u: usize) Self {
+            return Self{
+                .x = u / m,
+                .y = u % m,
+            };
+        }
+    };
+}
+
+/// Simple string hashing via counting with Trie.
+/// To use, first you need to add all needed strings.
+pub const StringVertices = struct {
+    const uth = string.UniqueHashTrieNodeType;
+    const trie_type = string.Trie(128, 0, uth);
+
+    all_str: [1000][]const u8, // Mapping from pos to string
+    trie: trie_type,
+    al: allocator.BumpAllo(0, []const u8),
+    cur_mx: usize,
+
+    const Self = @This();
+
+    pub const StringVertex = struct {
+        str: []const u8,
+        parent: *Self,
+
+        const Inner = @This();
+
+        pub fn hash(self: *const Inner) usize {
+            const res = self.parent.trie.get(self.str);
+            if (res[1] == self.str.len - 1) {
+                return res[0].value;
+            }
+            return 1000000000; // LOL???
+        }
+    };
+
+    pub fn new() Self {
+        var self = Self{
+            .al = .init(),
+            .all_str = undefined,
+            .trie = trie_type.new(),
+            .cur_mx = 0,
+        };
+        self.all_str = undefined;
+
+        return self;
+    }
+
+    pub fn newStrV(self: *Self, data: []const u8) StringVertex {
+        return StringVertex{
+            .str = data,
+            .parent = self,
+        };
+    }
+
+    pub fn add(self: *Self, data: []const u8) void {
+        if (self.trie.add(data)) {
+            const v = self.trie.get(data)[0].value;
+            self.all_str[v] = data;
+            self.cur_mx = v + 1;
+        }
+    }
+
+    pub fn unhash(self: *const Self, u: usize) StringVertex {
+        return StringVertex{
+            .str = self.all_str[u],
+            .parent = undefined, // No need
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.al.deinit();
+        self.trie.deinit();
+    }
+};
+
+// =============================== Usage as test =======================
+
+};
+const utils = struct {
+
+/// Compute (base^exponent) mod modu using binary exponentiation (comptime)
+pub fn pow_mod_comptime(base: comptime_int, exponent: comptime_int, modu: comptime_int) comptime_int {
+    var b = base % modu;
     var res: comptime_int = 1;
-    var e = exp;
+    var e = exponent;
     while (e > 0) {
-        if (e & 1 == 1) res = res * b % m;
-        b = b * b % m;
+        if (e & 1 == 1) res = res * b % modu;
+        b = b * b % modu;
         e >>= 1;
     }
     return res;
 }
-fn mod_inverse_const(a: comptime_int, m: comptime_int) comptime_int {
+
+/// Compute (base^exponent) mod modu using binary exponentiation (runtime)
+pub fn pow_mod(base: usize, exponent: usize, modu: usize) usize {
+    var b = base % modu;
+    var res: usize = 1;
+    var e = exponent;
+    while (e > 0) {
+        if (e & 1 == 1) res = (res * b) % modu;
+        b = (b * b) % modu;
+        e >>= 1;
+    }
+    return res;
+}
+
+/// Compute (base^exponent) mod modu using binary exponentiation (runtime, uses u128 for intermediate multiplications)
+pub fn pow_mod_big(base: u64, exponent: u64, modu: u64) u64 {
+    var b = base % modu;
+    var res: u64 = 1;
+    var e = exponent;
+    while (e > 0) {
+        if (e & 1 == 1) {
+            res = @intCast((@as(u128, res) * @as(u128, b)) % @as(u128, modu));
+        }
+        b = @intCast((@as(u128, b) * @as(u128, b)) % @as(u128, modu));
+        e >>= 1;
+    }
+    return res;
+}
+
+/// Compute modular inverse using extended Euclidean algorithm (comptime)
+pub fn mod_inverse_comptime(a: comptime_int, m: comptime_int) comptime_int {
     var m_val = m;
     var a_val = a;
     var y: comptime_int = 0;
@@ -304,6 +765,101 @@ fn mod_inverse_const(a: comptime_int, m: comptime_int) comptime_int {
     return x;
 }
 
+/// Compute modular inverse using Fermat's Little Theorem (runtime)
+/// Only valid when modu is prime.
+/// inv(x) = x^(modu-2) mod modu
+pub fn mod_inverse(x: usize, modu: usize) usize {
+    return pow_mod(x, modu - 2, modu);
+}
+
+};
+const modint = struct {
+
+/// Montgomery modular integer for a given prime modulus MOD (32-bit, uses R=2^32 with u64 intermediates)
+pub fn MontgomeryModint(comptime MOD_ARG: u32) type {
+    // Precompute R2_mod_M = (2^64) mod MOD_ARG (since R = 2^32, R² = 2^64)
+    const R2_mod_M: u32 = @intCast(utils.pow_mod_comptime(2, 64, MOD_ARG));
+    const niv: u32 = blk: {
+        // Find M' such that MOD * M' ≡ -1 (mod 2^32), then niv = -M'
+        // Use Newton's method: x_{k+1} = x_k * (2 - MOD * x_k) mod 2^32
+        var x: u32 = 1; // Initial guess
+        var i: usize = 0;
+        while (i < 5) : (i += 1) { // 5 iterations are enough for 32 bits
+            x = x *% (2 -% MOD_ARG *% x);
+        }
+        break :blk -%x;
+    };
+
+    return struct {
+        pub const MOD = MOD_ARG;
+        val: u32,
+
+        const Self = @This();
+
+        /// Convert a normal integer to Montgomery form
+        pub fn fromInt(n: u32) Self {
+            return Self{ .val = montgomeryMult(n, R2_mod_M) };
+        }
+
+        /// Convert back to a normal integer
+        pub fn toInt(self: Self) u32 {
+            return montgomeryMult(self.val, 1);
+        }
+
+        /// Montgomery multiplication: (a * b) / R mod MOD, R=2^32
+        inline fn montgomeryMult(a: u32, b: u32) u32 {
+            const t: u64 = @as(u64, a) * b;
+            const t_low: u32 = @as(u32, @truncate(t));
+            const m: u32 = t_low *% niv;
+            const t_plus_m_times_MOD: u64 = t + @as(u64, m) * MOD_ARG;
+            const u: u32 = @intCast(t_plus_m_times_MOD >> 32);
+            return if (u >= MOD_ARG) u - MOD_ARG else u;
+        }
+
+        pub fn add(a: Self, b: Self) Self {
+            const s: u64 = @as(u64, a.val) + b.val;
+            return Self{ .val = @intCast(if (s >= MOD_ARG) s - MOD_ARG else s) };
+        }
+
+        pub fn sub(a: Self, b: Self) Self {
+            const d: u64 = @as(u64, a.val) + MOD_ARG - b.val;
+            return Self{ .val = @intCast(if (d >= MOD_ARG) d - MOD_ARG else d) };
+        }
+
+        pub fn mul(a: Self, b: Self) Self {
+            return Self{ .val = montgomeryMult(a.val, b.val) };
+        }
+
+        pub fn neg(a: Self) Self {
+            return Self{ .val = if (a.val == 0) 0 else MOD_ARG - a.val };
+        }
+
+        pub fn inv(a: Self) Self {
+            // Fermat's little theorem: inv(x) = x^(MOD-2) mod MOD
+            const exponent = MOD_ARG - 2;
+            var result = Self.fromInt(1);
+            var base = a;
+            var e = exponent;
+            while (e > 0) {
+                if (e & 1 == 1) {
+                    result = result.mul(base);
+                }
+                base = base.mul(base);
+                e >>= 1;
+            }
+            return result;
+        }
+    };
+}
+
+/// Predefined MontgomeryModint for modulus 998244353 (32-bit, preferred)
+pub const Modint998244353 = MontgomeryModint(998244353);
+/// Predefined MontgomeryModint for modulus 1000000007 (32-bit, common in programming contests)
+pub const Modint1000000007 = MontgomeryModint(1000000007);
+
+};
+const ntt = struct {
+
 /// NTT (Number Theoretic Transform) and convolution utilities for a given Modint type
 /// Requires: Modint.MOD is a prime such that Modint.MOD = c * 2^k + 1 for some c, k
 pub fn NttHelpers(comptime ModintType: type, comptime ntt_root: comptime_int) type {
@@ -320,7 +876,7 @@ pub fn NttHelpers(comptime ModintType: type, comptime ntt_root: comptime_int) ty
     // Precompute roots and inverse roots
     const roots = blk: {
         var res: [max_log + 1]ModintType = undefined;
-        res[max_log] = ModintType.fromInt(@intCast(pow_mod_const(ntt_root, (ntt_mod - 1) >> max_log, ntt_mod)));
+        res[max_log] = ModintType.fromInt(@intCast(utils.pow_mod_comptime(ntt_root, (ntt_mod - 1) >> max_log, ntt_mod)));
         var i = max_log;
         while (i > 0) : (i -= 1) {
             res[i - 1] = res[i].mul(res[i]);
@@ -329,7 +885,7 @@ pub fn NttHelpers(comptime ModintType: type, comptime ntt_root: comptime_int) ty
     };
     const inv_roots = blk: {
         var res: [max_log + 1]ModintType = undefined;
-        res[max_log] = ModintType.fromInt(@intCast(mod_inverse_const(pow_mod_const(ntt_root, (ntt_mod - 1) >> max_log, ntt_mod), ntt_mod)));
+        res[max_log] = ModintType.fromInt(@intCast(utils.mod_inverse_comptime(utils.pow_mod_comptime(ntt_root, (ntt_mod - 1) >> max_log, ntt_mod), ntt_mod)));
         var i = max_log;
         while (i > 0) : (i -= 1) {
             res[i - 1] = res[i].mul(res[i]);
@@ -340,6 +896,9 @@ pub fn NttHelpers(comptime ModintType: type, comptime ntt_root: comptime_int) ty
     return struct {
         /// Compute bit-reversed permutation of indices (optimized)
         fn bit_reverse(i: usize, log_n: usize) usize {
+            if (log_n == 0) {
+                return i;
+            }
             return @bitReverse(@as(u64, @intCast(i))) >> (@as(u6, @intCast(64 - log_n)));
         }
 
@@ -347,6 +906,13 @@ pub fn NttHelpers(comptime ModintType: type, comptime ntt_root: comptime_int) ty
         /// a must have length a power of two
         pub fn ntt_f(a: []ModintType, invert: bool) void {
             const n = a.len;
+            if (n == 1) {
+                // Nothing to do for single element
+                if (invert) {
+                    // inv_n is 1/1 = 1, so no change
+                }
+                return;
+            }
             const log_n = std.math.log2_int(usize, n);
 
             // Bit-reverse permutation
@@ -380,7 +946,7 @@ pub fn NttHelpers(comptime ModintType: type, comptime ntt_root: comptime_int) ty
 
             // Inverse NTT scaling
             if (invert) {
-                const inv_n = ModintType.fromInt(@intCast(combinatorics.mod_inverse(n, ntt_mod)));
+                const inv_n = ModintType.fromInt(@intCast(utils.mod_inverse(n, ntt_mod)));
                 for (0..n) |i| {
                     a[i] = a[i].mul(inv_n);
                 }
@@ -474,6 +1040,24 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
             return result;
         }
 
+        /// Create the polynomial with all coefficients 1: 1 + x + x² + ... + x^max_degree
+        pub fn allOnes(gpa: std.mem.Allocator, max_degree: usize) !Self {
+            var result = try Self.init(gpa, max_degree);
+            for (0..result.coeffs.len) |i| {
+                result.coeffs[i] = ModintType.fromInt(1);
+            }
+            return result;
+        }
+
+        /// Create the polynomial with coefficients 0,1,2,...,max_degree: 0 + 1x + 2x² + ... + max_degree x^max_degree
+        pub fn increasing(gpa: std.mem.Allocator, max_degree: usize) !Self {
+            var result = try Self.init(gpa, max_degree);
+            for (0..result.coeffs.len) |i| {
+                result.coeffs[i] = ModintType.fromInt(@intCast(i));
+            }
+            return result;
+        }
+
         /// Free allocated memory
         pub fn deinit(self: Self) void {
             self.gpa.free(self.coeffs);
@@ -515,15 +1099,15 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
             var a_copy = try Self.fromSlice(a.gpa, a.coeffs, max_degree);
             defer a_copy.deinit();
 
-            if (use_ntt) {
-                // Use NTT convolution
+            if (use_ntt and max_degree > 0) {
+                // Use NTT convolution only for max_degree > 0
                 const conv = try Ntt.convolution(a.gpa, a_copy.coeffs, b.coeffs);
                 defer a.gpa.free(conv);
                 try a.resize(max_degree);
                 const copy_len = @min(conv.len, a.coeffs.len);
                 @memcpy(a.coeffs[0..copy_len], conv[0..copy_len]);
             } else {
-                // Naive O(n²) multiplication
+                // Naive O(n²) multiplication (for max_degree 0 or use_ntt false)
                 var result = try Self.init(a.gpa, max_degree);
                 defer result.deinit();
                 for (0..a_copy.coeffs.len) |i| {
@@ -541,6 +1125,48 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
                 try a.resize(max_degree);
                 @memcpy(a.coeffs, result.coeffs);
             }
+        }
+
+        /// Square the FPS in-place: a *= a, truncating to max_degree
+        pub fn square(a: *Self, max_degree: usize) !void {
+            var a_copy = try Self.fromSlice(a.gpa, a.coeffs, max_degree);
+            defer a_copy.deinit();
+            try a.mul(a_copy, max_degree);
+        }
+
+        /// Compute sum of pairwise convolutions of the given FPS: sum_{i<j} fps[i] * fps[j]
+        /// Returns a new FPS, caller must free with deinit()
+        pub fn sumPairwiseConvolution(gpa: std.mem.Allocator, fps_list: []const Self, max_degree: usize) !Self {
+            // Compute S = sum(fps_list)
+            var S = try Self.zero(gpa, max_degree);
+            errdefer S.deinit();
+            for (fps_list) |cfps| {
+                try S.add(cfps, max_degree);
+            }
+
+            // Compute S^2
+            try S.square(max_degree);
+
+            // Compute sum_squares = sum(fps^2)
+            var sum_squares = try Self.zero(gpa, max_degree);
+            errdefer sum_squares.deinit();
+            for (fps_list) |cfps| {
+                var fps_sq = try Self.fromSlice(gpa, cfps.coeffs, max_degree);
+                defer fps_sq.deinit();
+                try fps_sq.square(max_degree);
+                try sum_squares.add(fps_sq, max_degree);
+            }
+
+            // Compute (S^2 - sum_squares)
+            try S.sub(sum_squares, max_degree);
+
+            // Multiply by 1/2
+            const inv2 = ModintType.fromInt(2).inv();
+            for (S.coeffs) |*c| {
+                c.* = c.*.mul(inv2);
+            }
+
+            return S;
         }
 
         /// Compute inverse of FPS in-place modulo x^(max_degree + 1)
@@ -702,7 +1328,7 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
                 inv_cache = new_inv;
                 inv_cache_gpa = gpa;
             }
-            return inv_cache[1..n+1];
+            return inv_cache[1 .. n + 1];
         }
 
         /// Compute derivative of polynomial in-place: P'(x)
@@ -889,35 +1515,329 @@ pub const Modint998244353 = modint.MontgomeryModint(998244353);
 pub const Fps998244353 = FpsNtt(Modint998244353, 3);
 
 };
+const Modint = fps.Modint998244353;
+const FPS = fps.Fps998244353;
 
 const BUNDLE = false;
-const Mint = modint.Modint998244353;
 
 // ===================== Solving =====================
+
+const gtype_solve = graph.Graph(usize, void, 200001, 1);
+const ESOLVE = gtype_solve.E;
+var gsolve = gtype_solve.new();
 
 /// Main solving function for each test cases.
 pub fn solve() !void {
     defer _ = allocator.arena.reset(.retain_capacity);
     const al = allocator.arena.allocator();
-    const n = in.read(u32);
-    const m = in.read(u32);
-    const initial_coef: [10]Mint = [_]Mint{ Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1), Mint.fromInt(1) };
-    var f = try fps.Fps998244353.fromSlice(al, &initial_coef, n);
-    try f.pow(m - 1, n);
-    var ans = Mint.fromInt(0);
-    var psum = Mint.fromInt(0);
-    const n_mod_9 = n % 9;
-    for (f.coeffs, 0..) |k, i| {
-        psum = psum.add(k);
-        // const i_mod_9 = i % 9;
-        // std.debug.print("i = {}, k = {}, psum = {}, i%9 = {}, n%9 = {}\n", .{ i, k, psum, i_mod_9, n_mod_9 });
-        if (i % 9 == n_mod_9) {
-            ans = ans.add(psum);
+
+    var edges: [200000]ESOLVE = undefined;
+    const n = in.read(usize);
+    for (0..n - 1) |i| {
+        const u = in.read(usize) - 1;
+        const v = in.read(usize) - 1;
+        edges[i] = ESOLVE{
+            .u = u,
+            .v = v,
+            .w = undefined,
+        };
+    }
+    gsolve = gsolve.fromEdgesUnweighted(al, n, edges[0 .. n - 1]);
+
+    const Pruner = struct {
+        const ChildParent = struct { usize, usize };
+        const CPResult = struct { ChildParent, ?ChildParent, usize };
+
+        pub fn pruneToPath(gpa: std.mem.Allocator, g_ref: *const gtype_solve, num_nodes: usize) !CPResult {
+            // Step 1: Build adjacency sets and degree array
+            var adj_sets = try gpa.alloc(ds.UsizeSet, num_nodes);
+            defer {
+                for (adj_sets) |*set| {
+                    set.deinit();
+                }
+                gpa.free(adj_sets);
+            }
+            for (0..num_nodes) |i| {
+                adj_sets[i] = ds.UsizeSet.init(gpa);
+            }
+
+            var degree = try gpa.alloc(usize, num_nodes);
+            defer gpa.free(degree);
+            @memset(degree, 0);
+
+            for (0..num_nodes) |u| {
+                for (g_ref.get(u)) |ge| {
+                    const v = ge.v;
+                    try adj_sets[u].add(v);
+                    degree[u] += 1;
+                }
+            }
+
+            // Step 2: Collect initial leaves (degree 1)
+            var q = ds.Deque(usize, 200001).new();
+
+            for (0..num_nodes) |u| {
+                if (degree[u] == 1) {
+                    // std.debug.print("[Step 2] Adding initial leaf: {d}\n", .{u});
+                    q.push_back(&u);
+                }
+            }
+            // std.debug.print("[Step 2] Initial queue size: {d}\n", .{q.len});
+
+            // Step 3: Prune leaves until remaining <= 2
+            var step: usize = 0;
+            while (q.len > 2) {
+                step += 1;
+                const sz = q.len;
+                // std.debug.print("[Step 3] Iteration {d}, queue size: {d}\n", .{ step, sz });
+                for (0..sz) |_| {
+                    if (q.pop_front()) |u| {
+                        // Find the neighbor of u (since degree is 1 or was 1)
+                        const v = adj_sets[u].getMin() orelse adj_sets[u].getMax() orelse continue;
+                        // std.debug.print("[Step 3] Pruning leaf {d}, neighbor {d}\n", .{ u, v });
+                        // Remove u from v's adjacency set
+                        adj_sets[v].remove(u);
+                        degree[v] -= 1;
+                        if (degree[v] == 1) {
+                            // std.debug.print("[Step 3] Adding new leaf {d}\n", .{v});
+                            q.push_back(&v);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+            // std.debug.print("[Step 3] Final queue size: {d}\n", .{q.len});
+
+            // Step 4: Remaining nodes are whatever is left in the queue
+            var path_nodes = std.ArrayList(usize).initCapacity(gpa, q.len) catch unreachable;
+            defer path_nodes.deinit(gpa);
+            while (q.pop_front()) |u| {
+                // std.debug.print("[Step 4] Adding path node: {d}\n", .{u});
+                path_nodes.append(gpa, u) catch unreachable;
+            }
+            // std.debug.print("[Step 4] Path nodes: {any}\n", .{path_nodes.items});
+
+            // Step 5: Return ChildParent tuple with path length
+            if (path_nodes.items.len == 1) {
+                // Single node: path length is 1
+                const u = path_nodes.items[0];
+                // std.debug.print("[Step 5] Single node: {d}, path length: 1\n", .{u});
+                return .{ .{ u, u }, null, 1 };
+            } else if (path_nodes.items.len == 2) {
+                // Two nodes: calculate path length by traversing from a to b
+                const a = path_nodes.items[0];
+                const pa = adj_sets[a].getMin().?;
+                const b = path_nodes.items[1];
+                const pb = adj_sets[b].getMin().?;
+
+                // Calculate path length
+                var path_length: usize = 0;
+                var current: usize = a;
+                var prev: usize = a; // Initialize to something, will update
+                while (true) {
+                    path_length += 1;
+                    if (current == b) {
+                        break;
+                    }
+                    // Find next node (not prev)
+                    var iter = adj_sets[current].iterator();
+                    while (iter.next()) |next_node| {
+                        if (next_node != prev or path_length == 1) {
+                            prev = current;
+                            current = next_node;
+                            break;
+                        }
+                    }
+                }
+
+                // std.debug.print("[Step 5] Two nodes: a={d}, pa={d}; b={d}, pb={d}; path length: {d}\n", .{ a, pa, b, pb, path_length });
+                return .{ .{ a, pa }, .{ b, pb }, path_length };
+            } else {
+                // Should not happen if input is a tree
+                @panic("Remaining nodes not 1 or 2!");
+            }
+        }
+    };
+
+    const prune_res = try Pruner.pruneToPath(al, &gsolve, n);
+
+    const Tree = struct {
+        count_level: []usize,
+        max_level: usize,
+        gpa: std.mem.Allocator,
+
+        const Self = @This();
+
+        pub fn new(gpa: std.mem.Allocator, max_n: usize) !Self {
+            const count_level = try gpa.alloc(usize, max_n);
+            return Self{
+                .count_level = count_level,
+                .max_level = 0,
+                .gpa = gpa,
+            };
+        }
+
+        pub fn deinit(self: Self) void {
+            self.gpa.free(self.count_level);
+        }
+
+        pub fn init(self: *Self, nn: usize) void {
+            @memset(self.count_level[0..nn], 0);
+            self.max_level = 0;
+        }
+
+        pub fn dfsCountLevel(self: *Self, u: usize, p: usize, l: usize) void {
+            self.count_level[l] += 1;
+            for (gsolve.get(u)) |*ge| {
+                if (ge.v != p) {
+                    self.dfsCountLevel(ge.v, u, l + 1);
+                }
+            }
+            self.max_level = @max(self.max_level, l);
+        }
+    };
+
+    const path_length = prune_res[2];
+
+    if (prune_res[1]) |p2| {
+        // It's a path: build two FPS using one Tree instance
+        var tree = try Tree.new(al, n);
+
+        // First pass: build FPS A
+        tree.init(n);
+        tree.dfsCountLevel(prune_res[0][0], prune_res[0][1], 0);
+        const max_degree_a = tree.max_level;
+
+        // std.debug.print("[Debug] count_level A: ", .{});
+        // for (0..max_degree_a + 1) |l| {
+        //     std.debug.print("{d} ", .{tree.count_level[l]});
+        // }
+        // std.debug.print("\n", .{});
+
+        var fps_a = try FPS.init(al, max_degree_a);
+        for (0..max_degree_a + 1) |l| {
+            fps_a.coeffs[l] = Modint.fromInt(@intCast(tree.count_level[l]));
+        }
+
+        tree.init(max_degree_a + 1); // Clear up to max_degree_a
+        tree.dfsCountLevel(p2[0], p2[1], 0);
+        const max_degree_b = tree.max_level;
+
+        // std.debug.print("[Debug] count_level B: ", .{});
+        // for (0..max_degree_b + 1) |l| {
+        //     std.debug.print("{d} ", .{tree.count_level[l]});
+        // }
+        // std.debug.print("\n", .{});
+
+        const max_degree = @max(max_degree_a, max_degree_b);
+        const conv_max_degree = 2 * max_degree + 2;
+
+        // Resize fps_a to conv_max_degree
+        try fps_a.resize(conv_max_degree);
+
+        // Build fps_b with conv_max_degree
+        var fps_b = try FPS.init(al, conv_max_degree);
+        for (0..max_degree_b + 1) |l| {
+            fps_b.coeffs[l] = Modint.fromInt(@intCast(tree.count_level[l]));
+        }
+
+        // Build fps_c as convolution of fps_a and fps_b
+        var fps_c = try FPS.fromSlice(al, fps_a.coeffs, conv_max_degree);
+        try fps_c.mul(fps_b, conv_max_degree);
+
+        // Debug print fps_c
+        // std.debug.print("[Debug] fps_c coefficients: ", .{});
+        // for (0..conv_max_degree + 1) |l| {
+        //     std.debug.print("{d} ", .{fps_c.coeffs[l].toInt()});
+        // }
+        // std.debug.print("\n", .{});
+
+        for (1..n + 1) |k| {
+            if (k < path_length) {
+                print("0\n", .{});
+                continue;
+            }
+            const d = k - path_length;
+            if (d <= conv_max_degree) {
+                print("{}\n", .{fps_c.coeffs[d].toInt()});
+            } else {
+                print("0\n", .{});
+            }
+        }
+    } else {
+        // Isolated vertex case
+        const u = prune_res[0][0];
+        var tree = try Tree.new(al, n);
+
+        // First, dfs the whole tree starting at u and copy the result out
+        tree.init(n);
+        tree.dfsCountLevel(u, u, 0);
+        const whole_tree_max_degree = tree.max_level;
+        const whole_tree_count_level = try al.alloc(usize, whole_tree_max_degree + 1);
+        @memcpy(whole_tree_count_level, tree.count_level[0 .. whole_tree_max_degree + 1]);
+
+        // Debug print whole tree count_level
+        // std.debug.print("[Debug] whole tree count_level: ", .{});
+        // for (0..whole_tree_max_degree + 1) |l| {
+        //     std.debug.print("{d} ", .{whole_tree_count_level[l]});
+        // }
+        // std.debug.print("\n", .{});
+
+        const neighbors_slice = gsolve.get(u);
+
+        // Now, collect FPS for each subtree and track overall_max_degree
+        var fps_list = try std.ArrayList(FPS).initCapacity(al, neighbors_slice.len);
+
+        var overall_max_degree: usize = 0;
+        var last_degree = n;
+
+        for (neighbors_slice) |*ge| {
+            const v = ge.v;
+            tree.init(last_degree);
+            tree.dfsCountLevel(v, u, 0);
+            const subtree_max_degree = tree.max_level;
+            last_degree = subtree_max_degree + 1;
+            overall_max_degree = @max(overall_max_degree, subtree_max_degree);
+
+            // Create FPS for this subtree (we'll resize later)
+            var fps_subtree = try FPS.init(al, subtree_max_degree);
+            for (0..subtree_max_degree + 1) |l| {
+                fps_subtree.coeffs[l] = Modint.fromInt(@intCast(tree.count_level[l]));
+            }
+            try fps_list.append(al, fps_subtree);
+        }
+
+        overall_max_degree *= 2;
+        overall_max_degree += 2;
+
+        // Resize all FPS in fps_list to overall_max_degree
+        for (fps_list.items) |*fps_item| {
+            try fps_item.resize(overall_max_degree);
+        }
+
+        const final_fps = try FPS.sumPairwiseConvolution(al, fps_list.items, overall_max_degree);
+
+        // Debug print final_fps
+        // std.debug.print("[Debug] final_fps coefficients: ", .{});
+        // for (0..overall_max_degree + 1) |l| {
+        //     std.debug.print("{d} ", .{final_fps.coeffs[l].toInt()});
+        // }
+        // std.debug.print("\n", .{});
+
+        for (1..n + 1) |k| {
+            var ans = if (k <= whole_tree_max_degree + 1) whole_tree_count_level[k - 1] else 0;
+            // std.debug.print("ans for k = {} before adding cross: {}\n", .{ k, ans });
+            if (k >= 3 and k <= overall_max_degree + 3) {
+                // Count cross-root paths
+                // std.debug.print("Cross path count for k = {}: {}\n", .{ k, final_fps.coeffs[k - 3].toInt() });
+                ans += final_fps.coeffs[k - 3].toInt();
+            }
+            print("{}\n", .{ans});
         }
     }
-    const sub = n / 9;
-    ans = ans.sub(Mint.fromInt(sub));
-    print("{}\n", .{ans.toInt()});
+
+    defer gsolve.deinit();
 }
 
 pub fn main() !void {
@@ -945,7 +1865,7 @@ pub fn main() !void {
 
 // Definition for IO: Buffer and writer
 var in = CPInput.init();
-var inbuf: [100010]u8 = undefined;
+var inbuf: [5000000]u8 = undefined;
 var stdout_buffer: [100010]u8 = undefined;
 var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
 const writer = &stdout_writer.interface;
