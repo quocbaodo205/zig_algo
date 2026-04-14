@@ -858,6 +858,93 @@ pub const Modint998244353 = MontgomeryModint(998244353);
 pub const Modint1000000007 = MontgomeryModint(1000000007);
 
 };
+const fft = struct {
+
+pub fn fft_fn(a: []std.math.Complex(f64), invert: bool) void {
+    const n = a.len;
+
+    // Bit-reverse permutation
+    var j: usize = 0;
+    for (1..n) |i| {
+        var bit = n >> 1;
+        while (j >= bit) : (bit >>= 1) {
+            j -= bit;
+        }
+        j += bit;
+        if (i < j) {
+            std.mem.swap(std.math.Complex(f64), &a[i], &a[j]);
+        }
+    }
+
+    // Cooley-Tukey FFT
+    var len: usize = 2;
+    while (len <= n) : (len <<= 1) {
+        const sign: f64 = if (invert) -1 else 1;
+        const ang = 2 * std.math.pi / @as(f64, @floatFromInt(len)) * sign;
+        const wlen = std.math.Complex(f64).init(@cos(ang), @sin(ang));
+        var i: usize = 0;
+        while (i < n) : (i += len) {
+            var w = std.math.Complex(f64).init(1, 0);
+            for (0..len / 2) |k| {
+                const u = a[i + k];
+                const v = a[i + k + len / 2].mul(w);
+                a[i + k] = u.add(v);
+                a[i + k + len / 2] = u.sub(v);
+                w = w.mul(wlen);
+            }
+        }
+    }
+
+    // Inverse FFT scaling
+    if (invert) {
+        const n_f64 = @as(f64, @floatFromInt(n));
+        for (a) |*x| {
+            x.*.re /= n_f64;
+            x.*.im /= n_f64;
+        }
+    }
+}
+
+pub fn convolution(gpa: std.mem.Allocator, a: []const f64, b: []const f64) ![]f64 {
+    const n = blk: {
+        var n: usize = 1;
+        while (n < a.len + b.len - 1) n <<= 1;
+        break :blk n;
+    };
+
+    var fa = try gpa.alloc(std.math.Complex(f64), n);
+    defer gpa.free(fa);
+    var fb = try gpa.alloc(std.math.Complex(f64), n);
+    defer gpa.free(fb);
+
+    @memset(fa, std.math.Complex(f64).init(0, 0));
+    @memset(fb, std.math.Complex(f64).init(0, 0));
+
+    for (a, 0..) |x, i| {
+        fa[i] = std.math.Complex(f64).init(x, 0);
+    }
+    for (b, 0..) |x, i| {
+        fb[i] = std.math.Complex(f64).init(x, 0);
+    }
+
+    fft_fn(fa, false);
+    fft_fn(fb, false);
+
+    for (fa, 0..) |*x, i| {
+        x.* = x.*.mul(fb[i]);
+    }
+
+    fft_fn(fa, true);
+
+    const result = try gpa.alloc(f64, a.len + b.len - 1);
+    for (result, 0..) |*r, i| {
+        r.* = @round(fa[i].re);
+    }
+
+    return result;
+}
+
+};
 const ntt = struct {
 
 /// NTT (Number Theoretic Transform) and convolution utilities for a given Modint type
@@ -1514,9 +1601,133 @@ pub fn FpsNaive(comptime ModintType: type) type {
 pub const Modint998244353 = modint.MontgomeryModint(998244353);
 pub const Fps998244353 = FpsNtt(Modint998244353, 3);
 
+/// FPS using FFT for convolution (f64 coefficients)
+pub const FpsFft = struct {
+    coeffs: []f64,
+    gpa: std.mem.Allocator,
+
+    const Self = @This();
+
+    /// Initialize an FPS with all zeros
+    pub fn init(gpa: std.mem.Allocator, max_degree: usize) !Self {
+        const coeffs = try gpa.alloc(f64, max_degree + 1);
+        @memset(coeffs, 0.0);
+        return Self{
+            .coeffs = coeffs,
+            .gpa = gpa,
+        };
+    }
+
+    /// Create FPS from a slice of coefficients
+    pub fn fromSlice(gpa: std.mem.Allocator, coeffs: []const f64, max_degree: usize) !Self {
+        var result = try Self.init(gpa, max_degree);
+        const copy_len = @min(coeffs.len, result.coeffs.len);
+        @memcpy(result.coeffs[0..copy_len], coeffs[0..copy_len]);
+        return result;
+    }
+
+    /// Create the zero polynomial (all coefficients zero)
+    pub fn zero(gpa: std.mem.Allocator, max_degree: usize) !Self {
+        return try Self.init(gpa, max_degree);
+    }
+
+    /// Free allocated memory
+    pub fn deinit(self: Self) void {
+        self.gpa.free(self.coeffs);
+    }
+
+    /// Resize the FPS to a new max_degree, keeping existing coefficients
+    pub fn resize(self: *Self, new_max_degree: usize) !void {
+        const new_coeffs = try self.gpa.alloc(f64, new_max_degree + 1);
+        @memset(new_coeffs, 0.0);
+        const copy_len = @min(self.coeffs.len, new_coeffs.len);
+        @memcpy(new_coeffs[0..copy_len], self.coeffs[0..copy_len]);
+        self.gpa.free(self.coeffs);
+        self.coeffs = new_coeffs;
+    }
+
+    /// Add two FPS in-place: a += b, truncating to max_degree
+    pub fn add(a: *Self, b: Self, max_degree: usize) !void {
+        try a.resize(max_degree);
+        const len = @min(a.coeffs.len, @max(a.coeffs.len, b.coeffs.len));
+        for (0..len) |i| {
+            const bi = if (i < b.coeffs.len) b.coeffs[i] else 0.0;
+            a.coeffs[i] += bi;
+        }
+    }
+
+    /// Subtract two FPS in-place: a -= b, truncating to max_degree
+    pub fn sub(a: *Self, b: Self, max_degree: usize) !void {
+        try a.resize(max_degree);
+        const len = @min(a.coeffs.len, @max(a.coeffs.len, b.coeffs.len));
+        for (0..len) |i| {
+            const bi = if (i < b.coeffs.len) b.coeffs[i] else 0.0;
+            a.coeffs[i] -= bi;
+        }
+    }
+
+    /// Multiply two FPS in-place: a *= b, truncating to max_degree (using FFT)
+    pub fn mul(a: *Self, b: Self, max_degree: usize) !void {
+        // Need a temporary because a is both input and output
+        var a_copy = try Self.fromSlice(a.gpa, a.coeffs, max_degree);
+        defer a_copy.deinit();
+
+        // Use FFT convolution
+        const conv = try fft.convolution(a.gpa, a_copy.coeffs, b.coeffs);
+        defer a.gpa.free(conv);
+
+        try a.resize(max_degree);
+        const copy_len = @min(conv.len, a.coeffs.len);
+        @memcpy(a.coeffs[0..copy_len], conv[0..copy_len]);
+    }
+
+    /// Square the FPS in-place: a *= a, truncating to max_degree
+    pub fn square(a: *Self, max_degree: usize) !void {
+        var a_copy = try Self.fromSlice(a.gpa, a.coeffs, max_degree);
+        defer a_copy.deinit();
+        try a.mul(a_copy, max_degree);
+    }
+
+    /// Compute sum of pairwise convolutions of the given FPS: sum_{i<j} fps[i] * fps[j]
+    /// Returns a new FPS, caller must free with deinit()
+    pub fn sumPairwiseConvolution(gpa: std.mem.Allocator, fps_list: []const Self, max_degree: usize) !Self {
+        // Compute S = sum(fps_list)
+        var S = try Self.zero(gpa, max_degree);
+        errdefer S.deinit();
+        for (fps_list) |cfps| {
+            try S.add(cfps, max_degree);
+        }
+
+        // Compute S^2
+        try S.square(max_degree);
+
+        // Compute sum_squares = sum(fps^2)
+        var sum_squares = try Self.zero(gpa, max_degree);
+        errdefer sum_squares.deinit();
+        for (fps_list) |cfps| {
+            var fps_sq = try Self.fromSlice(gpa, cfps.coeffs, max_degree);
+            defer fps_sq.deinit();
+            try fps_sq.square(max_degree);
+            try sum_squares.add(fps_sq, max_degree);
+        }
+
+        // Compute (S^2 - sum_squares)
+        for (S.coeffs, 0..) |*c, i| {
+            const ss = if (i < sum_squares.coeffs.len) sum_squares.coeffs[i] else 0.0;
+            c.* -= ss;
+        }
+
+        // Divide by 2
+        for (S.coeffs) |*c| {
+            c.* /= 2.0;
+        }
+
+        return S;
+    }
 };
-const Modint = fps.Modint998244353;
-const FPS = fps.Fps998244353;
+
+};
+const FPS = fps.FpsFft;
 
 const BUNDLE = false;
 
@@ -1717,7 +1928,7 @@ pub fn solve() !void {
 
         var fps_a = try FPS.init(al, max_degree_a);
         for (0..max_degree_a + 1) |l| {
-            fps_a.coeffs[l] = Modint.fromInt(@intCast(tree.count_level[l]));
+            fps_a.coeffs[l] = @floatFromInt(tree.count_level[l]);
         }
 
         tree.init(max_degree_a + 1); // Clear up to max_degree_a
@@ -1739,7 +1950,7 @@ pub fn solve() !void {
         // Build fps_b with conv_max_degree
         var fps_b = try FPS.init(al, conv_max_degree);
         for (0..max_degree_b + 1) |l| {
-            fps_b.coeffs[l] = Modint.fromInt(@intCast(tree.count_level[l]));
+            fps_b.coeffs[l] = @floatFromInt(tree.count_level[l]);
         }
 
         // Build fps_c as convolution of fps_a and fps_b
@@ -1760,7 +1971,7 @@ pub fn solve() !void {
             }
             const d = k - path_length;
             if (d <= conv_max_degree) {
-                print("{}\n", .{fps_c.coeffs[d].toInt()});
+                print("{}\n", .{@as(u64, @intFromFloat(fps_c.coeffs[d]))});
             } else {
                 print("0\n", .{});
             }
@@ -1803,7 +2014,7 @@ pub fn solve() !void {
             // Create FPS for this subtree (we'll resize later)
             var fps_subtree = try FPS.init(al, subtree_max_degree);
             for (0..subtree_max_degree + 1) |l| {
-                fps_subtree.coeffs[l] = Modint.fromInt(@intCast(tree.count_level[l]));
+                fps_subtree.coeffs[l] = @floatFromInt(tree.count_level[l]);
             }
             try fps_list.append(al, fps_subtree);
         }
@@ -1826,12 +2037,12 @@ pub fn solve() !void {
         // std.debug.print("\n", .{});
 
         for (1..n + 1) |k| {
-            var ans = if (k <= whole_tree_max_degree + 1) whole_tree_count_level[k - 1] else 0;
+            var ans: u64 = if (k <= whole_tree_max_degree + 1) whole_tree_count_level[k - 1] else 0;
             // std.debug.print("ans for k = {} before adding cross: {}\n", .{ k, ans });
             if (k >= 3 and k <= overall_max_degree + 3) {
                 // Count cross-root paths
-                // std.debug.print("Cross path count for k = {}: {}\n", .{ k, final_fps.coeffs[k - 3].toInt() });
-                ans += final_fps.coeffs[k - 3].toInt();
+                // std.debug.print("Cross path count for k = {}: {}\n", .{ k, final_fps.coeffs[k - 3] });
+                ans += @intFromFloat(final_fps.coeffs[k - 3]);
             }
             print("{}\n", .{ans});
         }

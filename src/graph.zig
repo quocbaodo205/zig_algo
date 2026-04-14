@@ -200,6 +200,152 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, max_n: compti
     };
 }
 
+/// Tree struct for counting levels via DFS
+pub fn Tree(comptime max_n: comptime_int) type {
+    return struct {
+        count_level: []usize,
+        max_level: usize,
+        gpa: std.mem.Allocator,
+
+        const Self = @This();
+
+        pub fn new(gpa: std.mem.Allocator) !Self {
+            const count_level = try gpa.alloc(usize, max_n);
+            return Self{
+                .count_level = count_level,
+                .max_level = 0,
+                .gpa = gpa,
+            };
+        }
+
+        pub fn deinit(self: Self) void {
+            self.gpa.free(self.count_level);
+        }
+
+        pub fn init(self: *Self, nn: usize) void {
+            @memset(self.count_level[0..nn], 0);
+            self.max_level = 0;
+        }
+
+        pub fn dfsCountLevel(self: *Self, u: usize, p: usize, l: usize, g: anytype) void {
+            self.count_level[l] += 1;
+            for (g.get(u)) |*ge| {
+                if (ge.v != p) {
+                    self.dfsCountLevel(ge.v, u, l + 1, g);
+                }
+            }
+            self.max_level = @max(self.max_level, l);
+        }
+    };
+}
+
+/// Pruner struct for pruning a tree to its diameter path
+pub fn Pruner(comptime GraphType: type, comptime max_n: comptime_int) type {
+    return struct {
+        const ChildParent = struct { usize, usize };
+        const CPResult = struct { ChildParent, ?ChildParent, usize };
+
+        pub fn pruneToPath(gpa: std.mem.Allocator, g_ref: *const GraphType, num_nodes: usize) !CPResult {
+            // Step 1: Build adjacency sets and degree array
+            var adj_sets = try gpa.alloc(ds.UsizeSet, num_nodes);
+            defer {
+                for (adj_sets) |*set| {
+                    set.deinit();
+                }
+                gpa.free(adj_sets);
+            }
+            for (0..num_nodes) |i| {
+                adj_sets[i] = ds.UsizeSet.init(gpa);
+            }
+
+            var degree = try gpa.alloc(usize, num_nodes);
+            defer gpa.free(degree);
+            @memset(degree, 0);
+
+            for (0..num_nodes) |u| {
+                for (g_ref.get(u)) |ge| {
+                    const v = ge.v;
+                    try adj_sets[u].add(v);
+                    degree[u] += 1;
+                }
+            }
+
+            // Step 2: Collect initial leaves (degree 1)
+            var q = ds.Deque(usize, max_n).new();
+
+            for (0..num_nodes) |u| {
+                if (degree[u] == 1) {
+                    q.push_back(&u);
+                }
+            }
+
+            // Step 3: Prune leaves until remaining <= 2
+            while (q.len > 2) {
+                const sz = q.len;
+                for (0..sz) |_| {
+                    if (q.pop_front()) |u| {
+                        // Find the neighbor of u (since degree is 1 or was 1)
+                        const v = adj_sets[u].getMin() orelse adj_sets[u].getMax() orelse continue;
+                        // Remove u from v's adjacency set
+                        adj_sets[v].remove(u);
+                        degree[v] -= 1;
+                        if (degree[v] == 1) {
+                            q.push_back(&v);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Step 4: Remaining nodes are whatever is left in the queue
+            var path_nodes = std.ArrayList(usize).initCapacity(gpa, q.len) catch unreachable;
+            defer path_nodes.deinit(gpa);
+            while (q.pop_front()) |u| {
+                path_nodes.append(gpa, u) catch unreachable;
+            }
+
+            // Step 5: Return ChildParent tuple with path length
+            if (path_nodes.items.len == 1) {
+                // Single node: path length is 1
+                const u = path_nodes.items[0];
+                return .{ .{ u, u }, null, 1 };
+            } else if (path_nodes.items.len == 2) {
+                // Two nodes: calculate path length by traversing from a to b
+                const a = path_nodes.items[0];
+                const pa = adj_sets[a].getMin().?;
+                const b = path_nodes.items[1];
+                const pb = adj_sets[b].getMin().?;
+
+                // Calculate path length
+                var path_length: usize = 0;
+                var current: usize = a;
+                var prev: usize = a; // Initialize to something, will update
+                while (true) {
+                    path_length += 1;
+                    if (current == b) {
+                        break;
+                    }
+                    // Find next node (not prev)
+                    var iter = adj_sets[current].iterator();
+                    while (iter.next()) |next_node| {
+                        if (next_node != prev or path_length == 1) {
+                            prev = current;
+                            current = next_node;
+                            break;
+                        }
+                    }
+                }
+
+                return .{ .{ a, pa }, .{ b, pb }, path_length };
+            } else {
+                // Should not happen if input is a tree
+                @panic("Remaining nodes not 1 or 2!");
+            }
+        }
+    };
+}
+
 // ================================== Vertex types ==============================
 
 /// GridPoint that provide hash / unhash to be able to use as a graph.

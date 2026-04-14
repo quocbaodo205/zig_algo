@@ -1,6 +1,7 @@
 const std = @import("std");
 const ntt = @import("ntt.zig");
 const modint = @import("modint.zig");
+const fft = @import("fft.zig");
 
 /// Helper to create FPS struct with given options
 fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root: ?comptime_int) type {
@@ -524,8 +525,133 @@ pub fn FpsNaive(comptime ModintType: type) type {
 pub const Modint998244353 = modint.MontgomeryModint(998244353);
 pub const Fps998244353 = FpsNtt(Modint998244353, 3);
 
+/// FPS using FFT for convolution (f64 coefficients)
+pub const FpsFft = struct {
+    coeffs: []f64,
+    gpa: std.mem.Allocator,
+
+    const Self = @This();
+
+    /// Initialize an FPS with all zeros
+    pub fn init(gpa: std.mem.Allocator, max_degree: usize) !Self {
+        const coeffs = try gpa.alloc(f64, max_degree + 1);
+        @memset(coeffs, 0.0);
+        return Self{
+            .coeffs = coeffs,
+            .gpa = gpa,
+        };
+    }
+
+    /// Create FPS from a slice of coefficients
+    pub fn fromSlice(gpa: std.mem.Allocator, coeffs: []const f64, max_degree: usize) !Self {
+        var result = try Self.init(gpa, max_degree);
+        const copy_len = @min(coeffs.len, result.coeffs.len);
+        @memcpy(result.coeffs[0..copy_len], coeffs[0..copy_len]);
+        return result;
+    }
+
+    /// Create the zero polynomial (all coefficients zero)
+    pub fn zero(gpa: std.mem.Allocator, max_degree: usize) !Self {
+        return try Self.init(gpa, max_degree);
+    }
+
+    /// Free allocated memory
+    pub fn deinit(self: Self) void {
+        self.gpa.free(self.coeffs);
+    }
+
+    /// Resize the FPS to a new max_degree, keeping existing coefficients
+    pub fn resize(self: *Self, new_max_degree: usize) !void {
+        const new_coeffs = try self.gpa.alloc(f64, new_max_degree + 1);
+        @memset(new_coeffs, 0.0);
+        const copy_len = @min(self.coeffs.len, new_coeffs.len);
+        @memcpy(new_coeffs[0..copy_len], self.coeffs[0..copy_len]);
+        self.gpa.free(self.coeffs);
+        self.coeffs = new_coeffs;
+    }
+
+    /// Add two FPS in-place: a += b, truncating to max_degree
+    pub fn add(a: *Self, b: Self, max_degree: usize) !void {
+        try a.resize(max_degree);
+        const len = @min(a.coeffs.len, @max(a.coeffs.len, b.coeffs.len));
+        for (0..len) |i| {
+            const bi = if (i < b.coeffs.len) b.coeffs[i] else 0.0;
+            a.coeffs[i] += bi;
+        }
+    }
+
+    /// Subtract two FPS in-place: a -= b, truncating to max_degree
+    pub fn sub(a: *Self, b: Self, max_degree: usize) !void {
+        try a.resize(max_degree);
+        const len = @min(a.coeffs.len, @max(a.coeffs.len, b.coeffs.len));
+        for (0..len) |i| {
+            const bi = if (i < b.coeffs.len) b.coeffs[i] else 0.0;
+            a.coeffs[i] -= bi;
+        }
+    }
+
+    /// Multiply two FPS in-place: a *= b, truncating to max_degree (using FFT)
+    pub fn mul(a: *Self, b: Self, max_degree: usize) !void {
+        // Need a temporary because a is both input and output
+        var a_copy = try Self.fromSlice(a.gpa, a.coeffs, max_degree);
+        defer a_copy.deinit();
+
+        // Use FFT convolution
+        const conv = try fft.convolution(a.gpa, a_copy.coeffs, b.coeffs);
+        defer a.gpa.free(conv);
+
+        try a.resize(max_degree);
+        const copy_len = @min(conv.len, a.coeffs.len);
+        @memcpy(a.coeffs[0..copy_len], conv[0..copy_len]);
+    }
+
+    /// Square the FPS in-place: a *= a, truncating to max_degree
+    pub fn square(a: *Self, max_degree: usize) !void {
+        var a_copy = try Self.fromSlice(a.gpa, a.coeffs, max_degree);
+        defer a_copy.deinit();
+        try a.mul(a_copy, max_degree);
+    }
+
+    /// Compute sum of pairwise convolutions of the given FPS: sum_{i<j} fps[i] * fps[j]
+    /// Returns a new FPS, caller must free with deinit()
+    pub fn sumPairwiseConvolution(gpa: std.mem.Allocator, fps_list: []const Self, max_degree: usize) !Self {
+        // Compute S = sum(fps_list)
+        var S = try Self.zero(gpa, max_degree);
+        errdefer S.deinit();
+        for (fps_list) |cfps| {
+            try S.add(cfps, max_degree);
+        }
+
+        // Compute S^2
+        try S.square(max_degree);
+
+        // Compute sum_squares = sum(fps^2)
+        var sum_squares = try Self.zero(gpa, max_degree);
+        errdefer sum_squares.deinit();
+        for (fps_list) |cfps| {
+            var fps_sq = try Self.fromSlice(gpa, cfps.coeffs, max_degree);
+            defer fps_sq.deinit();
+            try fps_sq.square(max_degree);
+            try sum_squares.add(fps_sq, max_degree);
+        }
+
+        // Compute (S^2 - sum_squares)
+        for (S.coeffs, 0..) |*c, i| {
+            const ss = if (i < sum_squares.coeffs.len) sum_squares.coeffs[i] else 0.0;
+            c.* -= ss;
+        }
+
+        // Divide by 2
+        for (S.coeffs) |*c| {
+            c.* /= 2.0;
+        }
+
+        return S;
+    }
+};
+
 test "fps basic operations" {
-    const gpa = std.testing.allocator;
+    const gpa = std.heap.page_allocator;
     const FPS = FpsNtt(Modint998244353, 3);
     const Modint = Modint998244353;
 
@@ -569,7 +695,7 @@ test "fps basic operations" {
 }
 
 test "fps multiplication" {
-    const gpa = std.testing.allocator;
+    const gpa = std.heap.page_allocator;
     const FPS = FpsNtt(Modint998244353, 3);
     const Modint = Modint998244353;
 
@@ -588,7 +714,7 @@ test "fps multiplication" {
 }
 
 test "fps inverse" {
-    const gpa = std.testing.allocator;
+    const gpa = std.heap.page_allocator;
     const MOD: usize = 998244353;
     const FPS = FpsNtt(Modint998244353, 3);
     const Modint = Modint998244353;
@@ -651,7 +777,7 @@ test "fps deriv and integ" {
 }
 
 test "fps ln and exp" {
-    const gpa = std.testing.allocator;
+    const gpa = std.heap.page_allocator;
     const FPS = FpsNtt(Modint998244353, 3);
     const Modint = Modint998244353;
 
@@ -806,4 +932,77 @@ test "modint inv" {
     const inv_a = a.inv();
     const product = a.mul(inv_a);
     try std.testing.expectEqual(@as(u32, 1), product.toInt());
+}
+
+test "fps fft basic operations" {
+    const gpa = std.testing.allocator;
+    const FPS = FpsFft;
+
+    // Test fromSlice
+    const a_coeffs = [_]f64{ 1, 2, 3 };
+    var a = try FPS.fromSlice(gpa, &a_coeffs, 10);
+    defer a.deinit();
+
+    const expected_a = [_]f64{ 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0 };
+    for (0..a.coeffs.len) |i| {
+        try std.testing.expectEqual(expected_a[i], a.coeffs[i]);
+    }
+
+    // Test add
+    const b_coeffs = [_]f64{ 4, 5 };
+    var b = try FPS.fromSlice(gpa, &b_coeffs, 10);
+    defer b.deinit();
+    var c = try FPS.fromSlice(gpa, &a_coeffs, 10);
+    defer c.deinit();
+    try c.add(b, 10);
+
+    const expected_c = [_]f64{ 5, 7, 3, 0, 0, 0, 0, 0, 0, 0, 0 };
+    for (0..c.coeffs.len) |i| {
+        try std.testing.expectEqual(expected_c[i], c.coeffs[i]);
+    }
+}
+
+test "fps fft multiplication" {
+    const gpa = std.testing.allocator;
+    const FPS = FpsFft;
+
+    // (1 + x) * (1 + x) = 1 + 2x + x²
+    const a_coeffs = [_]f64{ 1, 1 };
+    var a = try FPS.fromSlice(gpa, &a_coeffs, 10);
+    defer a.deinit();
+    var b = try FPS.fromSlice(gpa, &a_coeffs, 10);
+    defer b.deinit();
+    try b.mul(a, 10);
+
+    const expected_b = [_]f64{ 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+    for (0..b.coeffs.len) |i| {
+        try std.testing.expectEqual(expected_b[i], b.coeffs[i]);
+    }
+}
+
+test "fps fft sum pairwise convolution" {
+    const gpa = std.testing.allocator;
+    const FPS = FpsFft;
+
+    // Test with three polynomials: f1 = 1, f2 = x, f3 = x²
+    // Pairwise products: f1*f2 = x, f1*f3 = x², f2*f3 = x³
+    // Sum: x + x² + x³
+    var f1 = try FPS.init(gpa, 10);
+    defer f1.deinit();
+    f1.coeffs[0] = 1.0;
+    var f2 = try FPS.init(gpa, 10);
+    defer f2.deinit();
+    f2.coeffs[1] = 1.0;
+    var f3 = try FPS.init(gpa, 10);
+    defer f3.deinit();
+    f3.coeffs[2] = 1.0;
+
+    const fps_list = [_]FPS{ f1, f2, f3 };
+    var result = try FPS.sumPairwiseConvolution(gpa, &fps_list, 10);
+    defer result.deinit();
+
+    const expected = [_]f64{ 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0 };
+    for (0..result.coeffs.len) |i| {
+        try std.testing.expectEqual(expected[i], result.coeffs[i]);
+    }
 }
