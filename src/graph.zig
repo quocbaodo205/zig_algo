@@ -1,5 +1,4 @@
 const std = @import("std");
-const allocator = @import("allocator.zig");
 const ds = @import("ds.zig");
 const string = @import("string.zig"); // Use for string graph only
 
@@ -87,19 +86,6 @@ pub fn Graph(comptime node_type: type, comptime weight_type: type, max_n: compti
         pub fn get(self: *const Self, u: usize) []GE {
             @branchHint(.likely);
             return self.g[u].items;
-        }
-
-        /// Reset state but keep allocated memory for multiple test cases usage.
-        pub fn reset(self: *Self) void {
-            for (0..self.n) |i| {
-                self.g[i].shrinkRetainingCapacity(0);
-            }
-        }
-
-        pub fn deinit(self: *Self) void {
-            for (0..self.n) |i| {
-                self.g[i].deinit(self.gpa);
-            }
         }
 
         // ================================ Classic algo =================
@@ -246,7 +232,7 @@ pub fn Pruner(comptime GraphType: type, comptime max_n: comptime_int) type {
         const CPResult = struct { ChildParent, ?ChildParent, usize };
 
         pub fn pruneToPath(gpa: std.mem.Allocator, g_ref: *const GraphType, num_nodes: usize) !CPResult {
-            // Step 1: Build adjacency sets and degree array
+            // Build adjacency sets and degree array
             var adj_sets = try gpa.alloc(ds.UsizeSet, num_nodes);
             defer {
                 for (adj_sets) |*set| {
@@ -270,7 +256,7 @@ pub fn Pruner(comptime GraphType: type, comptime max_n: comptime_int) type {
                 }
             }
 
-            // Step 2: Collect initial leaves (degree 1)
+            // Collect initial leaves
             var q = ds.Deque(usize, max_n).new();
 
             for (0..num_nodes) |u| {
@@ -279,7 +265,7 @@ pub fn Pruner(comptime GraphType: type, comptime max_n: comptime_int) type {
                 }
             }
 
-            // Step 3: Prune leaves until remaining <= 2
+            // Prune leaves until remaining <= 2
             while (q.len > 2) {
                 const sz = q.len;
                 for (0..sz) |_| {
@@ -298,14 +284,14 @@ pub fn Pruner(comptime GraphType: type, comptime max_n: comptime_int) type {
                 }
             }
 
-            // Step 4: Remaining nodes are whatever is left in the queue
+            // Remaining nodes are whatever is left in the queue
             var path_nodes = std.ArrayList(usize).initCapacity(gpa, q.len) catch unreachable;
             defer path_nodes.deinit(gpa);
             while (q.pop_front()) |u| {
                 path_nodes.append(gpa, u) catch unreachable;
             }
 
-            // Step 5: Return ChildParent tuple with path length
+            // Return ChildParent tuple with path length
             if (path_nodes.items.len == 1) {
                 // Single node: path length is 1
                 const u = path_nodes.items[0];
@@ -320,7 +306,7 @@ pub fn Pruner(comptime GraphType: type, comptime max_n: comptime_int) type {
                 // Calculate path length
                 var path_length: usize = 0;
                 var current: usize = a;
-                var prev: usize = a; // Initialize to something, will update
+                var prev: usize = a;
                 while (true) {
                     path_length += 1;
                     if (current == b) {
@@ -378,7 +364,7 @@ pub const StringVertices = struct {
 
     all_str: [1000][]const u8, // Mapping from pos to string
     trie: trie_type,
-    al: allocator.BumpAllo(0, []const u8),
+    gpa: std.mem.Allocator,
     cur_mx: usize,
 
     const Self = @This();
@@ -398,11 +384,11 @@ pub const StringVertices = struct {
         }
     };
 
-    pub fn new() Self {
+    pub fn new(gpa: std.mem.Allocator) Self {
         var self = Self{
-            .al = .init(),
+            .gpa = gpa,
             .all_str = undefined,
-            .trie = trie_type.new(),
+            .trie = trie_type.new(gpa),
             .cur_mx = 0,
         };
         self.all_str = undefined;
@@ -433,8 +419,8 @@ pub const StringVertices = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.al.deinit();
-        self.trie.deinit();
+        // No-op since Trie doesn't have deinit and we use external allocator
+        _ = self;
     }
 };
 
@@ -466,7 +452,6 @@ test "Test graph usize" {
     };
     var g = gtype.new();
     g = g.fromEdgesUnweighted(alloc, max_n, &edges);
-    defer g.deinit();
 
     const DFS = gtype.makeDFS();
     DFS.dfs(0, &g);
@@ -530,7 +515,6 @@ test "Test graph grid" {
     };
     var g = gtype.new();
     g = g.fromEdgesUnweighted(alloc, n * m, &edges);
-    defer g.deinit();
 
     const DFS = gtype.makeDFS();
     DFS.dfs(0, &g);
@@ -546,7 +530,7 @@ test "Test graph string" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var str_v = StringVertices.new();
+    var str_v = StringVertices.new(alloc);
     defer str_v.deinit();
     str_v.add("a");
     str_v.add("b");
@@ -572,7 +556,6 @@ test "Test graph string" {
     };
     var g = gtype.new();
     g = g.fromEdgesUnweighted(alloc, 10, &edges);
-    defer g.deinit();
     const start: [1]usize = [1]usize{0};
     const BFS = gtype.makeBFS();
     BFS.bfs(&start, &g);

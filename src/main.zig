@@ -1,145 +1,43 @@
 const std = @import("std");
 const allocator = @import("allocator.zig");
-const graph = @import("graph.zig");
-const ds = @import("ds.zig");
+const combinatorics = @import("combinatorics.zig");
 const fps = @import("fps.zig");
-const FPS = fps.FpsFft;
+const prime = @import("prime.zig");
 
-const BUNDLE = false;
+const BUNDLE = true;
 
 // ===================== Solving =====================
 
-const gtype_solve = graph.Graph(usize, void, 200001, 1);
-const ESOLVE = gtype_solve.E;
-var gsolve = gtype_solve.new();
-const TreeType = graph.Tree(200001);
-const PrunerType = graph.Pruner(gtype_solve, 200001);
+const Modint = fps.Modint998244353;
+const FPS = fps.Fps998244353;
+const Combinatorics = combinatorics.CombinatoricModint(Modint);
 
-/// Main solving function for each test cases.
 pub fn solve() !void {
     defer _ = allocator.arena.reset(.retain_capacity);
-    const al = allocator.arena.allocator();
+    const gpa = allocator.arena.allocator();
 
-    var edges: [200000]ESOLVE = undefined;
-    const n = in.read(usize);
-    for (0..n - 1) |i| {
-        const u = in.read(usize) - 1;
-        const v = in.read(usize) - 1;
-        edges[i] = ESOLVE{
-            .u = u,
-            .v = v,
-            .w = undefined,
-        };
-    }
-    gsolve = gsolve.fromEdgesUnweighted(al, n, edges[0 .. n - 1]);
+    const n = in.read(u32);
 
-    const prune_res = try PrunerType.pruneToPath(al, &gsolve, n);
+    const pr = prime.PrimeDS(250_000).init();
 
-    const path_length = prune_res[2];
+    const comb = try Combinatorics.init(gpa, n + 1);
 
-    if (prune_res[1]) |p2| {
-        // It's a path: build two FPS using one Tree instance
-        var tree = try TreeType.new(al);
-
-        // First pass: build FPS A
-        tree.init(n);
-        tree.dfsCountLevel(prune_res[0][0], prune_res[0][1], 0, &gsolve);
-        const max_degree_a = tree.max_level;
-
-        var fps_a = try FPS.init(al, max_degree_a);
-        for (0..max_degree_a + 1) |l| {
-            fps_a.coeffs[l] = @floatFromInt(tree.count_level[l]);
-        }
-
-        tree.init(max_degree_a + 1); // Clear up to max_degree_a
-        tree.dfsCountLevel(p2[0], p2[1], 0, &gsolve);
-        const max_degree_b = tree.max_level;
-
-        const max_degree = @max(max_degree_a, max_degree_b);
-        const conv_max_degree = 2 * max_degree + 2;
-
-        // Resize fps_a to conv_max_degree
-        try fps_a.resize(conv_max_degree);
-
-        // Build fps_b with conv_max_degree
-        var fps_b = try FPS.init(al, conv_max_degree);
-        for (0..max_degree_b + 1) |l| {
-            fps_b.coeffs[l] = @floatFromInt(tree.count_level[l]);
-        }
-
-        // Build fps_c as convolution of fps_a and fps_b
-        var fps_c = try FPS.fromSlice(al, fps_a.coeffs, conv_max_degree);
-        try fps_c.mul(fps_b, conv_max_degree);
-
-        for (1..n + 1) |k| {
-            if (k < path_length) {
-                print("0\n", .{});
-                continue;
-            }
-            const d = k - path_length;
-            if (d <= conv_max_degree) {
-                print("{}\n", .{@as(u64, @intFromFloat(fps_c.coeffs[d]))});
-            } else {
-                print("0\n", .{});
-            }
-        }
-    } else {
-        // Isolated vertex case
-        const u = prune_res[0][0];
-        var tree = try TreeType.new(al);
-
-        // First, dfs the whole tree starting at u and copy the result out
-        tree.init(n);
-        tree.dfsCountLevel(u, u, 0, &gsolve);
-        const whole_tree_max_degree = tree.max_level;
-        const whole_tree_count_level = try al.alloc(usize, whole_tree_max_degree + 1);
-        @memcpy(whole_tree_count_level, tree.count_level[0 .. whole_tree_max_degree + 1]);
-
-        const neighbors_slice = gsolve.get(u);
-
-        // Now, collect FPS for each subtree and track overall_max_degree
-        var fps_list = try std.ArrayList(FPS).initCapacity(al, neighbors_slice.len);
-
-        var overall_max_degree: usize = 0;
-        var last_degree = n;
-
-        for (neighbors_slice) |*ge| {
-            const v = ge.v;
-            tree.init(last_degree);
-            tree.dfsCountLevel(v, u, 0, &gsolve);
-            const subtree_max_degree = tree.max_level;
-            last_degree = subtree_max_degree + 1;
-            overall_max_degree = @max(overall_max_degree, subtree_max_degree);
-
-            // Create FPS for this subtree (we'll resize later)
-            var fps_subtree = try FPS.init(al, subtree_max_degree);
-            for (0..subtree_max_degree + 1) |l| {
-                fps_subtree.coeffs[l] = @floatFromInt(tree.count_level[l]);
-            }
-            try fps_list.append(al, fps_subtree);
-        }
-
-        overall_max_degree *= 2;
-        overall_max_degree += 2;
-
-        // Resize all FPS in fps_list to overall_max_degree
-        for (fps_list.items) |*fps_item| {
-            try fps_item.resize(overall_max_degree);
-        }
-
-        const final_fps = try FPS.sumPairwiseConvolution(al, fps_list.items, overall_max_degree);
-
-        for (1..n + 1) |k| {
-            var ans: u64 = if (k <= whole_tree_max_degree + 1) whole_tree_count_level[k - 1] else 0;
-            if (k >= 3 and k <= overall_max_degree + 3) {
-                // Count cross-root paths
-                ans += @intFromFloat(final_fps.coeffs[k - 3]);
-            }
-            print("{}\n", .{ans});
-        }
+    // construct egf of prime.
+    var g = try FPS.init(gpa, n);
+    g.coeffs[0] = Modint.fromInt(1);
+    var i: usize = 0;
+    while (i < pr.prime_count and pr.primes[i] <= n) : (i += 1) {
+        const p = pr.primes[i];
+        g.coeffs[p] = comb.inv_fact[p]; // x^p / p!
     }
 
-    defer gsolve.deinit();
+    // Since R = x * phi(R), apply Lagrange inversion
+    try g.pow(n, n);
+    var ans = g.coeffs[n - 1];
+    ans = ans.mul(comb.fact[n - 1]);
+    ans = ans.mul(Modint.fromInt(n).inv()); // (n - 1)! / n: fix the root label to 1
+
+    print("{}\n", .{ans.toInt()});
 }
 
 pub fn main() !void {
@@ -264,8 +162,8 @@ const CPInput = struct {
 
 // ======================================== bundle instruction
 const Regex = @import("regex").Regex;
-// const graph = @import("graph.zig");
-// const ds = @import("ds.zig");
+const graph = @import("graph.zig");
+const ds = @import("ds.zig");
 
 /// Read all the import of the current file.
 fn readAllImport(file_name: []const u8) !std.StringHashMap([]const u8) {
@@ -305,8 +203,7 @@ pub fn bundle() ![]const u8 {
     var q = ds.Deque([]const u8, 100).new();
     q.push_back(&"main.zig");
     // Graph structure
-    var str_v = graph.StringVertices.new();
-    defer str_v.deinit();
+    var str_v = graph.StringVertices.new(gpa);
     const node_type = graph.StringVertices.StringVertex;
     const gtype_bundle = graph.Graph(node_type, void, 10, 0);
     const EBUNDLE = gtype_bundle.E;
@@ -340,7 +237,6 @@ pub fn bundle() ![]const u8 {
     }
     var gbundle = gtype_bundle.new();
     gbundle = gbundle.fromEdgesUnweighted(gpa, 10, edges.items);
-    defer gbundle.deinit();
 
     // Step 2: Prepare a file writer
     var write_buffer: [1024]u8 = undefined;

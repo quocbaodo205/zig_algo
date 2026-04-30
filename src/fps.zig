@@ -19,6 +19,64 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
         var inv_cache: []ModintType = &.{};
         var inv_cache_gpa: ?std.mem.Allocator = null;
 
+        /// Return the canonical (smaller) modular square root, or null if none exists.
+        /// MOD must be prime. Uses Tonelli-Shanks for the general odd-prime case.
+        fn scalarSqrt(value: ModintType) ?ModintType {
+            const value_int = value.toInt();
+            if (value_int == 0) return ModintType.fromInt(0);
+            if (MOD == 2) return value;
+
+            const one_value = ModintType.fromInt(1);
+            if (value.pow((MOD - 1) / 2).toInt() != one_value.toInt()) return null;
+
+            var root: ModintType = undefined;
+            if (MOD % 4 == 3) {
+                root = value.pow((MOD + 1) / 4);
+            } else {
+                var q: u32 = MOD - 1;
+                var s: u32 = 0;
+                while (q % 2 == 0) {
+                    q /= 2;
+                    s += 1;
+                }
+
+                var z_int: u32 = 2;
+                while (ModintType.fromInt(z_int).pow((MOD - 1) / 2).toInt() != MOD - 1) {
+                    z_int += 1;
+                }
+
+                var c = ModintType.fromInt(z_int).pow(q);
+                var x = value.pow((q + 1) / 2);
+                var t = value.pow(q);
+                var m = s;
+
+                while (t.toInt() != 1) {
+                    var i: u32 = 1;
+                    var t_squared = t.mul(t);
+                    while (i < m and t_squared.toInt() != 1) : (i += 1) {
+                        t_squared = t_squared.mul(t_squared);
+                    }
+                    if (i == m) return null;
+
+                    const exponent: u32 = @as(u32, 1) << @intCast(m - i - 1);
+                    const b = c.pow(exponent);
+                    const b_squared = b.mul(b);
+                    x = x.mul(b);
+                    t = t.mul(b_squared);
+                    c = b_squared;
+                    m = i;
+                }
+                root = x;
+            }
+
+            const root_int = root.toInt();
+            const other_int = MOD - root_int;
+            return if (root_int <= other_int)
+                root
+            else
+                ModintType.fromInt(other_int);
+        }
+
         /// Initialize an FPS with all zeros
         pub fn init(gpa: std.mem.Allocator, max_degree: usize) !Self {
             const coeffs = try gpa.alloc(ModintType, max_degree + 1);
@@ -227,6 +285,108 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
             // Update self with result
             try self.resize(max_degree);
             @memcpy(self.coeffs, result.coeffs);
+        }
+
+        /// Compute the canonical FPS square root in-place modulo x^(max_degree + 1).
+        ///
+        /// Returns error.NoSquareRoot when the first non-zero degree is odd or
+        /// its coefficient is a quadratic non-residue. The all-zero series has
+        /// the all-zero square root. For two scalar roots, the smaller residue
+        /// is chosen; in particular, sqrt(1) has constant term +1.
+        pub fn sqrt(self: *Self, max_degree: usize) !void {
+            if (MOD == 2) return error.UnsupportedModulus;
+
+            var source = try Self.fromSlice(self.gpa, self.coeffs, max_degree);
+            defer source.deinit();
+
+            var first_non_zero: usize = 0;
+            while (first_non_zero <= max_degree and source.coeffs[first_non_zero].toInt() == 0) {
+                first_non_zero += 1;
+            }
+
+            if (first_non_zero > max_degree) {
+                try self.resize(max_degree);
+                @memset(self.coeffs, ModintType.fromInt(0));
+                return;
+            }
+            if (first_non_zero % 2 == 1) return error.NoSquareRoot;
+
+            const leading = source.coeffs[first_non_zero];
+            const leading_root = scalarSqrt(leading) orelse return error.NoSquareRoot;
+            const leading_inv = leading.inv();
+
+            // Remove x^first_non_zero and normalize the constant term to 1.
+            const normalized_degree = max_degree - first_non_zero;
+            var normalized = try Self.zero(self.gpa, normalized_degree);
+            defer normalized.deinit();
+            for (0..normalized_degree + 1) |i| {
+                normalized.coeffs[i] = source.coeffs[first_non_zero + i].mul(leading_inv);
+            }
+
+            // Newton iteration: q <- (q + normalized / q) / 2.
+            var result = try Self.one(self.gpa, 0);
+            defer result.deinit();
+            var current_degree: usize = 0;
+            const inv2 = ModintType.fromInt(2).inv();
+
+            while (current_degree < normalized_degree) {
+                const next_degree = @min(2 * current_degree + 1, normalized_degree);
+
+                var normalized_trunc = try Self.fromSlice(
+                    self.gpa,
+                    normalized.coeffs[0 .. next_degree + 1],
+                    next_degree,
+                );
+                defer normalized_trunc.deinit();
+
+                var result_extended = try Self.fromSlice(
+                    self.gpa,
+                    result.coeffs,
+                    next_degree,
+                );
+                defer result_extended.deinit();
+
+                var result_inv = try Self.fromSlice(
+                    self.gpa,
+                    result.coeffs,
+                    next_degree,
+                );
+                defer result_inv.deinit();
+                try result_inv.inv(next_degree);
+
+                const quotient = try Self.mulHelper(
+                    self.gpa,
+                    normalized_trunc,
+                    result_inv,
+                    next_degree,
+                );
+                defer quotient.deinit();
+
+                const new_result = try Self.addHelper(
+                    self.gpa,
+                    result_extended,
+                    quotient,
+                    next_degree,
+                );
+                for (new_result.coeffs) |*coefficient| {
+                    coefficient.* = coefficient.*.mul(inv2);
+                }
+
+                result.deinit();
+                result = new_result;
+                current_degree = next_degree;
+            }
+
+            // Restore the scalar root and half of the removed x-shift.
+            const result_shift = first_non_zero / 2;
+            var shifted_result = try Self.zero(self.gpa, max_degree);
+            defer shifted_result.deinit();
+            for (result.coeffs, 0..) |coefficient, i| {
+                shifted_result.coeffs[result_shift + i] = coefficient.mul(leading_root);
+            }
+
+            try self.resize(max_degree);
+            @memcpy(self.coeffs, shifted_result.coeffs);
         }
 
         /// Compute self^exponent using binary exponentiation or ln/exp in-place, truncating to max_degree
@@ -861,6 +1021,88 @@ test "fps square" {
     }
 }
 
+test "fps sqrt" {
+    const gpa = std.testing.allocator;
+    const FPS = FpsNtt(Modint998244353, 3);
+    const Mint = Modint998244353;
+    const MOD = Mint.MOD;
+
+    // CF 438E branch: sqrt(1 - 4x) starts with +1.
+    {
+        const input = [_]Mint{
+            Mint.fromInt(1),
+            Mint.fromInt(MOD - 4),
+        };
+        var root = try FPS.fromSlice(gpa, &input, 5);
+        defer root.deinit();
+        try root.sqrt(5);
+
+        const expected = [_]Mint{
+            Mint.fromInt(1),
+            Mint.fromInt(MOD - 2),
+            Mint.fromInt(MOD - 2),
+            Mint.fromInt(MOD - 4),
+            Mint.fromInt(MOD - 10),
+            Mint.fromInt(MOD - 28),
+        };
+        for (expected, 0..) |coefficient, i| {
+            try std.testing.expectEqual(coefficient.toInt(), root.coeffs[i].toInt());
+        }
+
+        var squared = try FPS.fromSlice(gpa, root.coeffs, 5);
+        defer squared.deinit();
+        try squared.square(5);
+        try std.testing.expectEqual(@as(u32, 1), squared.coeffs[0].toInt());
+        try std.testing.expectEqual(@as(u32, MOD - 4), squared.coeffs[1].toInt());
+        for (2..6) |i| {
+            try std.testing.expectEqual(@as(u32, 0), squared.coeffs[i].toInt());
+        }
+    }
+
+    // Shifted root: 4x² + 4x³ + x⁴ = (2x + x²)².
+    {
+        const input = [_]Mint{
+            Mint.fromInt(0),
+            Mint.fromInt(0),
+            Mint.fromInt(4),
+            Mint.fromInt(4),
+            Mint.fromInt(1),
+        };
+        var root = try FPS.fromSlice(gpa, &input, 5);
+        defer root.deinit();
+        try root.sqrt(5);
+
+        const expected = [_]u32{ 0, 2, 1, 0, 0, 0 };
+        for (expected, 0..) |coefficient, i| {
+            try std.testing.expectEqual(coefficient, root.coeffs[i].toInt());
+        }
+    }
+
+    // The zero series has the zero square root.
+    {
+        var zero = try FPS.zero(gpa, 4);
+        defer zero.deinit();
+        try zero.sqrt(4);
+        for (zero.coeffs) |coefficient| {
+            try std.testing.expectEqual(@as(u32, 0), coefficient.toInt());
+        }
+    }
+
+    // Odd valuation and a quadratic non-residue have no FPS square root.
+    {
+        const odd_shift = [_]Mint{ Mint.fromInt(0), Mint.fromInt(1) };
+        var value = try FPS.fromSlice(gpa, &odd_shift, 3);
+        defer value.deinit();
+        try std.testing.expectError(error.NoSquareRoot, value.sqrt(3));
+    }
+    {
+        const non_residue = [_]Mint{Mint.fromInt(3)};
+        var value = try FPS.fromSlice(gpa, &non_residue, 3);
+        defer value.deinit();
+        try std.testing.expectError(error.NoSquareRoot, value.sqrt(3));
+    }
+}
+
 test "fps sum pairwise convolution" {
     const gpa = std.heap.page_allocator;
     const FPS = FpsNtt(Modint998244353, 3);
@@ -981,7 +1223,7 @@ test "fps fft multiplication" {
 }
 
 test "fps fft sum pairwise convolution" {
-    const gpa = std.testing.allocator;
+    const gpa = std.heap.page_allocator;
     const FPS = FpsFft;
 
     // Test with three polynomials: f1 = 1, f2 = x, f3 = x²

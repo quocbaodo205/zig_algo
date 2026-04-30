@@ -62,7 +62,10 @@ pub fn MontgomeryModint(comptime MOD_ARG: u32) type {
 
         pub fn inv(a: Self) Self {
             // Fermat's little theorem: inv(x) = x^(MOD-2) mod MOD
-            const exponent = MOD_ARG - 2;
+            return a.pow(MOD_ARG - 2);
+        }
+
+        pub fn pow(a: Self, exponent: u32) Self {
             var result = Self.fromInt(1);
             var base = a;
             var e = exponent;
@@ -106,4 +109,10 @@ test "montgomery modint (small modulus test)" {
 
     const d = M.fromInt((3 + 5) % 7); // 8 mod7=1
     try std.testing.expectEqual(d.toInt(), a.add(b).toInt());
+
+    // Test pow: 3^4 = 81 mod 7 = 4, 5^3 = 125 mod 7 = 6
+    const e = M.fromInt(4);
+    const f = M.fromInt(6);
+    try std.testing.expectEqual(e.toInt(), a.pow(4).toInt());
+    try std.testing.expectEqual(f.toInt(), b.pow(3).toInt());
 }

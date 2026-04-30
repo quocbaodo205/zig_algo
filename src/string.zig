@@ -1,8 +1,7 @@
 /// String data structures and algorithm in zig.
 const std = @import("std");
-const allocator = @import("allocator.zig");
 
-/// Allocator: Heap + arena since we don't know how many things.
+/// Allocator: Uses provided external allocator
 pub fn Trie(
     child_num: comptime_int,
     norm: comptime_int, // First char to normalize to 0
@@ -24,16 +23,16 @@ pub fn Trie(
 
     return struct {
         head: *TrieNode,
-        al: allocator.BumpAllo(0, TrieNode),
+        gpa: std.mem.Allocator,
 
         const Self = @This();
 
-        pub fn new() Self {
+        pub fn new(gpa: std.mem.Allocator) Self {
             var self = Self{
                 .head = undefined,
-                .al = .init(),
+                .gpa = gpa,
             };
-            self.head = self.al.create() catch unreachable;
+            self.head = self.gpa.create(TrieNode) catch unreachable;
             self.head.* = TrieNode.new();
             return self;
         }
@@ -43,7 +42,7 @@ pub fn Trie(
             for (data) |c| {
                 const cc = c - norm;
                 if (cur_node.children[cc] == null) {
-                    const new_ptr = self.al.create() catch unreachable;
+                    const new_ptr = self.gpa.create(TrieNode) catch unreachable;
                     new_ptr.* = TrieNode.new();
                     cur_node.children[cc] = new_ptr;
                 }
@@ -69,15 +68,6 @@ pub fn Trie(
                 cur_node = cur_node.children[cc].?;
             }
             return .{ cur_node.val, data.len - 1 };
-        }
-
-        pub fn reset(self: *Self) void {
-            self.al.reset();
-            self.head = self.al.create() catch unreachable;
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.al.deinit();
         }
     };
 }
@@ -131,9 +121,50 @@ pub const UniqueHashTrieNodeType = struct {
     }
 };
 
+/// Z-function calculator: z[i] is the length of the longest substring starting from i that is also a prefix of the string.
+pub fn ZFunction(comptime max_n: comptime_int) type {
+    return struct {
+        z: [max_n]usize,
+
+        const Self = @This();
+
+        pub fn new() Self {
+            return Self{
+                .z = undefined,
+            };
+        }
+
+        pub fn getZ(self: *Self, s: []const u8) []const usize {
+            const n = s.len;
+            if (n == 0) return &.{};
+            self.z[0] = 0;
+            var l: usize = 0;
+            var r: usize = 0;
+            for (1..n) |i| {
+                if (i <= r) {
+                    self.z[i] = @min(r - i + 1, self.z[i - l]);
+                } else {
+                    self.z[i] = 0;
+                }
+                while (i + self.z[i] < n and s[self.z[i]] == s[i + self.z[i]]) {
+                    self.z[i] += 1;
+                }
+                if (i + self.z[i] - 1 > r) {
+                    l = i;
+                    r = i + self.z[i] - 1;
+                }
+            }
+            return self.z[0..n];
+        }
+    };
+}
+
 test "Trie test" {
-    var trie = Trie(26, 'a', PrefixTrieNodeType).new();
-    defer trie.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var trie = Trie(26, 'a', PrefixTrieNodeType).new(alloc);
     _ = trie.add("abcd");
     var res = trie.get("ab");
     try std.testing.expect(res[0].is_full_str == false);
@@ -155,4 +186,11 @@ test "Trie test" {
     try std.testing.expect(res[0].is_full_str == false);
     try std.testing.expect(res[0].prefix_count == 3);
     try std.testing.expectEqual(0, res[1]);
+}
+
+test "Z-function test" {
+    var zf = ZFunction(100).new();
+    const s = "aaabaaab";
+    const z = zf.getZ(s);
+    try std.testing.expectEqualSlices(usize, &[_]usize{ 0, 2, 1, 0, 4, 2, 1, 0 }, z);
 }

@@ -2,6 +2,58 @@ const std = @import("std");
 
 // =============================== Data structure in Zig ====================
 
+/// Cartesian Tree node representation
+pub const CartesianTreeNode = struct {
+    parent: usize = 0,
+    left: usize = 0,
+    right: usize = 0,
+};
+
+/// Cartesian Tree struct, preallocated with max_n capacity
+pub fn CartesianTree(comptime max_n: comptime_int) type {
+    return struct {
+        nodes: [max_n + 1]CartesianTreeNode = undefined,
+        len: usize = 0,
+
+        const Self = @This();
+
+        /// Initialize empty Cartesian Tree
+        pub fn init() Self {
+            return Self{};
+        }
+
+        /// Build min-heap Cartesian Tree from an array of length at most max_n
+        pub fn buildMin(self: *Self, comptime T: type, arr: []const T) void {
+            self.len = arr.len;
+            const n = self.len;
+
+            // Initialize nodes
+            for (0..n + 1) |i| {
+                self.nodes[i] = .{ .parent = 0, .left = 0, .right = 0 };
+            }
+
+            for (1..n + 1) |i| {
+                self.nodes[i].parent = i - 1;
+
+                while (self.nodes[i].parent != 0 and arr[self.nodes[i].parent - 1] > arr[i - 1]) {
+                    self.nodes[i].parent = self.nodes[self.nodes[i].parent].parent;
+                }
+
+                self.nodes[i].left = self.nodes[self.nodes[i].parent].right;
+                self.nodes[self.nodes[i].parent].right = i;
+                if (self.nodes[i].left != 0) {
+                    self.nodes[self.nodes[i].left].parent = i;
+                }
+            }
+        }
+
+        /// Get slice of nodes 0..len+1 (1-based indexing)
+        pub fn getNodes(self: *const Self) []const CartesianTreeNode {
+            return self.nodes[0 .. self.len + 1];
+        }
+    };
+}
+
 /// Ring buffer (deque) with upfront max element it can hold.
 /// Not growable and panic if not work
 pub fn Deque(comptime T: type, max_n: comptime_int) type {
@@ -180,6 +232,26 @@ pub const UsizeSet = struct {
         return if (self.inner.getMax()) |node| node.key else null;
     }
 
+    /// Get the predecessor (previous smaller value) of the given value.
+    /// Returns null if the value is not in the set or there is no predecessor.
+    pub fn prev(self: *Self, value: usize) ?usize {
+        const entry = self.inner.getEntryFor(value);
+        if (entry.node) |node| {
+            return if (node.prev()) |prev_node| prev_node.key else null;
+        }
+        return null;
+    }
+
+    /// Get the successor (next larger value) of the given value.
+    /// Returns null if the value is not in the set or there is no successor.
+    pub fn next(self: *Self, value: usize) ?usize {
+        const entry = self.inner.getEntryFor(value);
+        if (entry.node) |node| {
+            return if (node.next()) |next_node| next_node.key else null;
+        }
+        return null;
+    }
+
     /// In-order iterator over the set's values
     pub const Iterator = struct {
         inner: InnerTreap.InorderIterator,
@@ -289,6 +361,21 @@ test "UsizeSet test" {
     try std.testing.expectEqual(@as(?usize, 1), set.getMin());
     try std.testing.expectEqual(@as(?usize, 8), set.getMax());
 
+    // Test prev() and next()
+    try std.testing.expectEqual(@as(?usize, null), set.prev(1)); // 1 is min
+    try std.testing.expectEqual(@as(?usize, 1), set.prev(2));
+    try std.testing.expectEqual(@as(?usize, 2), set.prev(3));
+    try std.testing.expectEqual(@as(?usize, 3), set.prev(5));
+    try std.testing.expectEqual(@as(?usize, 5), set.prev(8));
+    try std.testing.expectEqual(@as(?usize, null), set.prev(10)); // 10 not in set
+
+    try std.testing.expectEqual(@as(?usize, 2), set.next(1));
+    try std.testing.expectEqual(@as(?usize, 3), set.next(2));
+    try std.testing.expectEqual(@as(?usize, 5), set.next(3));
+    try std.testing.expectEqual(@as(?usize, 8), set.next(5));
+    try std.testing.expectEqual(@as(?usize, null), set.next(8)); // 8 is max
+    try std.testing.expectEqual(@as(?usize, null), set.next(10)); // 10 not in set
+
     // Test add duplicate (should do nothing)
     try set.add(5);
     try std.testing.expect(set.contains(5));
@@ -299,13 +386,41 @@ test "UsizeSet test" {
     try std.testing.expectEqual(@as(?usize, 1), set.getMin());
     try std.testing.expectEqual(@as(?usize, 8), set.getMax());
 
+    // Test prev() and next() after removing 2
+    try std.testing.expectEqual(@as(?usize, 1), set.prev(3));
+    try std.testing.expectEqual(@as(?usize, 3), set.next(1));
+
     // Test remove min
     set.remove(1);
     try std.testing.expect(!set.contains(1));
     try std.testing.expectEqual(@as(?usize, 3), set.getMin());
 
+    // Test prev() and next() after removing 1
+    try std.testing.expectEqual(@as(?usize, null), set.prev(3));
+
     // Test remove max
     set.remove(8);
     try std.testing.expect(!set.contains(8));
     try std.testing.expectEqual(@as(?usize, 5), set.getMax());
+
+    // Test prev() and next() after removing 8
+    try std.testing.expectEqual(@as(?usize, null), set.next(5));
+}
+
+test "CartesianTree struct test" {
+    const arr = [_]i32{ 3, 1, 4, 1, 5 };
+    var ct = CartesianTree(5).init();
+    ct.buildMin(i32, &arr);
+    const tree = ct.getNodes();
+    try std.testing.expect(tree.len == arr.len + 1);
+
+    var root: usize = 0;
+    for (1..tree.len) |i| {
+        if (tree[i].parent == 0) {
+            root = i;
+            break;
+        }
+    }
+    try std.testing.expect(root != 0);
+    try std.testing.expectEqual(arr[root - 1], 1);
 }

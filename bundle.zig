@@ -1,708 +1,4 @@
 const std = @import("std");
-const allocator = struct {
-const heap = std.heap;
-const Allocator = std.mem.Allocator;
-const Error = Allocator.Error;
-
-/// Global heap + arena for quick various tasks.
-/// Reset it yourself after each test cases.
-pub var arena = heap.ArenaAllocator.init(heap.page_allocator);
-
-/// Bump Allocator based on either fba + arena or page + arena depending on usage.
-pub fn BumpAllo(num_elements: comptime_int, comptime T: type) type {
-    const total_size = num_elements * @sizeOf(T);
-    if (total_size > 0 and total_size <= 1000000) {
-        // Stack allocation only with FBA
-        return struct {
-            const Self = @This();
-
-            buffer: [total_size]u8,
-            fba: heap.FixedBufferAllocator,
-            arena: heap.ArenaAllocator,
-
-            pub fn init() Self {
-                var self = Self{
-                    // Big chunk allocation on heap to avoid stack OOM.
-                    .buffer = undefined,
-                    .fba = undefined,
-                    .arena = undefined,
-                };
-                self.fba = .init(&self.buffer);
-                self.arena = .init(self.fba.allocator());
-                return self;
-            }
-
-            pub fn reset(self: *Self) void {
-                self.arena.reset(.retain_capacity);
-            }
-
-            pub fn create(self: *Self) Error!*T {
-                return try self.arena.allocator().create(T);
-            }
-
-            pub fn deinit(self: *Self) void {
-                self.arena.deinit();
-            }
-
-            pub fn allocator(self: *Self) Allocator {
-                return self.arena.allocator();
-            }
-        };
-    }
-    return struct {
-        const Self = @This();
-
-        arena: heap.ArenaAllocator,
-
-        pub fn init() Self {
-            return Self{
-                .arena = .init(heap.page_allocator),
-            };
-        }
-
-        pub fn create(self: *Self) Error!*T {
-            return self.arena.allocator().create(T);
-        }
-
-        pub fn reset(self: *Self) void {
-            self.arena.reset(.retain_capacity);
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.arena.deinit();
-        }
-
-        pub fn allocator(self: *Self) Allocator {
-            return self.arena.allocator();
-        }
-    };
-}
-};
-const ds = struct {
-
-// =============================== Data structure in Zig ====================
-
-/// Ring buffer (deque) with upfront max element it can hold.
-/// Not growable and panic if not work
-pub fn Deque(comptime T: type, max_n: comptime_int) type {
-    return struct {
-        arr: [max_n]?T,
-        // [l..r)
-        l: usize,
-        r: usize,
-        len: usize,
-
-        const Self = @This();
-
-        pub fn new() Self {
-            return Self{
-                // Remember this, very useful!
-                .arr = [_]?T{null} ** max_n,
-                .l = 0,
-                .r = 0,
-                .len = 0,
-            };
-        }
-
-        pub fn front(self: *Self) ?T {
-            return self.arr[self.l];
-        }
-
-        pub fn back(self: Self) ?T {
-            const new_r = if (self.r == 0)
-                max_n - 1
-            else
-                self.r - 1;
-            return self.arr[new_r];
-        }
-
-        /// Push an element to the back of the deque
-        pub fn push_back(self: *Self, element: *const T) void {
-            // Add at r
-            if (self.arr[self.r] != null) {
-                @panic("Array filled and cannot add more element!");
-            }
-            self.arr[self.r] = element.*; // Deref to copy inside
-            self.r += 1;
-            self.len += 1;
-            if (self.r >= max_n) self.r = 0;
-        }
-
-        /// Pop return and element from the back of the deque
-        pub fn pop_back(self: *Self) ?T {
-            // Get at r-1 and move back
-            const new_r = if (self.r == 0)
-                max_n - 1
-            else
-                self.r - 1;
-            if (self.arr[new_r] == null) {
-                return null;
-            }
-            const pop_data = self.arr[new_r].?;
-            self.arr[new_r] = null;
-            self.r = new_r;
-            self.len -= 1;
-            return pop_data;
-        }
-
-        /// Push an element to the front of the deque
-        pub fn push_front(self: *Self, element: *const T) void {
-            // Add at l-1 and move l back
-            const new_l = if (self.l == 0)
-                max_n - 1
-            else
-                self.l - 1;
-            if (self.arr[new_l] != null) {
-                @panic("Array filled and cannot add more element!");
-            }
-            self.arr[new_l] = element.*; // Deref to copy inside
-            self.l = new_l;
-            self.len += 1;
-        }
-
-        /// Pop return and element from the front of the deque
-        pub fn pop_front(self: *Self) ?T {
-            // Get at l and move l forward
-            if (self.arr[self.l] == null) {
-                return null;
-            }
-            const pop_data = self.arr[self.l].?;
-            self.arr[self.l] = null;
-            self.len -= 1;
-            self.l += 1;
-            if (self.l >= max_n) {
-                self.l = 0;
-            }
-            return pop_data;
-        }
-
-        /// Print the queue.
-        pub fn print(self: Self) void {
-            std.debug.print("[", .{});
-            var i = self.l;
-            while (i != self.r) {
-                std.debug.print("{any}, ", .{self.arr[i].?});
-                i += 1;
-                if (i == max_n) i = 0;
-            }
-            std.debug.print("]\n", .{});
-        }
-    };
-}
-
-// ====================================== UsizeSet based on std.Treap ==============================================
-
-/// A set of usize values backed by std.Treap, using an allocator for node management.
-pub const UsizeSet = struct {
-    const Treap = std.Treap;
-    const InnerTreap = Treap(usize, std.math.order);
-    const Node = InnerTreap.Node;
-
-    inner: InnerTreap = .{},
-    gpa: std.mem.Allocator,
-    len: usize = 0,
-
-    const Self = @This();
-
-    /// Initialize a new UsizeSet with the given allocator.
-    pub fn init(gpa: std.mem.Allocator) Self {
-        return Self{ .gpa = gpa };
-    }
-
-    /// Deinitialize the UsizeSet and free all allocated nodes.
-    pub fn deinit(self: *Self) void {
-        // Iterate through all nodes and free them
-        var iter = self.inner.inorderIterator();
-        while (iter.next()) |node| {
-            self.gpa.destroy(node);
-        }
-        self.inner = .{};
-        self.len = 0;
-    }
-
-    /// Add a value to the set. Does nothing if the value is already present.
-    pub fn add(self: *Self, value: usize) !void {
-        var entry = self.inner.getEntryFor(value);
-        if (entry.node == null) {
-            const new_node = try self.gpa.create(Node);
-            entry.set(new_node);
-            self.len += 1;
-        }
-    }
-
-    /// Check if a value is present in the set.
-    pub fn contains(self: *Self, value: usize) bool {
-        return self.inner.getEntryFor(value).node != null;
-    }
-
-    /// Remove a value from the set. Does nothing if the value is not present.
-    pub fn remove(self: *Self, value: usize) void {
-        var entry = self.inner.getEntryFor(value);
-        if (entry.node) |node| {
-            entry.set(null);
-            self.gpa.destroy(node);
-            self.len -= 1;
-        }
-    }
-
-    /// Get the number of elements in the set.
-    pub fn getLen(self: *const Self) usize {
-        return self.len;
-    }
-
-    /// Get the minimum value in the set. Returns null if the set is empty.
-    pub fn getMin(self: *Self) ?usize {
-        return if (self.inner.getMin()) |node| node.key else null;
-    }
-
-    /// Get the maximum value in the set. Returns null if the set is empty.
-    pub fn getMax(self: *Self) ?usize {
-        return if (self.inner.getMax()) |node| node.key else null;
-    }
-
-    /// In-order iterator over the set's values
-    pub const Iterator = struct {
-        inner: InnerTreap.InorderIterator,
-
-        pub fn next(it: *Iterator) ?usize {
-            return if (it.inner.next()) |node| node.key else null;
-        }
-    };
-
-    /// Get an iterator over the set's values
-    pub fn iterator(self: *Self) Iterator {
-        return Iterator{ .inner = self.inner.inorderIterator() };
-    }
-};
-
-};
-const string = struct {
-/// String data structures and algorithm in zig.
-
-/// Allocator: Heap + arena since we don't know how many things.
-pub fn Trie(
-    child_num: comptime_int,
-    norm: comptime_int, // First char to normalize to 0
-    T: anytype,
-) type {
-    const TrieNode = struct {
-        const Self = @This();
-
-        val: T,
-        children: [child_num]?*Self,
-
-        pub fn new() Self {
-            return Self{
-                .children = [_]?*Self{null} ** child_num,
-                .val = T.init(),
-            };
-        }
-    };
-
-    return struct {
-        head: *TrieNode,
-        al: allocator.BumpAllo(0, TrieNode),
-
-        const Self = @This();
-
-        pub fn new() Self {
-            var self = Self{
-                .head = undefined,
-                .al = .init(),
-            };
-            self.head = self.al.create() catch unreachable;
-            self.head.* = TrieNode.new();
-            return self;
-        }
-
-        pub fn add(self: *Self, data: []const u8) bool {
-            var cur_node = self.head;
-            for (data) |c| {
-                const cc = c - norm;
-                if (cur_node.children[cc] == null) {
-                    const new_ptr = self.al.create() catch unreachable;
-                    new_ptr.* = TrieNode.new();
-                    cur_node.children[cc] = new_ptr;
-                }
-                // Value combine with add with is_end as a boolean
-                if (!cur_node.val.add(false)) {
-                    return false;
-                }
-                cur_node = cur_node.children[cc].?;
-            }
-            return cur_node.val.add(true); // Process the last missing node
-        }
-
-        /// Return the value and the size in data that we gone through,
-        /// since we might not gone through the whole data.
-        /// The last index is size - 1.
-        pub fn get(self: Self, data: []const u8) struct { T, usize } {
-            var cur_node = self.head;
-            for (data, 0..) |c, i| {
-                const cc = c - norm;
-                if (cur_node.children[cc] == null) {
-                    return .{ cur_node.val, i };
-                }
-                cur_node = cur_node.children[cc].?;
-            }
-            return .{ cur_node.val, data.len - 1 };
-        }
-
-        pub fn reset(self: *Self) void {
-            self.al.reset();
-            self.head = self.al.create() catch unreachable;
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.al.deinit();
-        }
-    };
-}
-
-/// Prefix trie node support count how many with this prefix and is full string
-pub const PrefixTrieNodeType = struct {
-    is_full_str: bool,
-    prefix_count: u32,
-
-    const Self = @This();
-
-    pub fn init() Self {
-        return Self{
-            .is_full_str = false,
-            .prefix_count = 0,
-        };
-    }
-
-    pub fn add(self: *Self, is_end: bool) bool {
-        self.prefix_count += 1;
-        self.is_full_str |= is_end;
-        return true;
-    }
-};
-
-/// Assign each string with a unique hash (incremental counter).
-/// You will have to manage the usize -> string mapping elsewhere.
-pub const UniqueHashTrieNodeType = struct {
-    var counter: usize = 0; // Global incremental counter
-
-    value: usize,
-
-    const Self = @This();
-
-    pub fn init() Self {
-        return Self{
-            .value = 0,
-        };
-    }
-
-    pub fn add(self: *Self, is_end: bool) bool {
-        if (!is_end) {
-            return true; // Doesn't do anything...
-        }
-        if (self.value == 0) {
-            self.value = counter;
-            counter += 1;
-            return true;
-        }
-        return false;
-    }
-};
-
-};
-const graph = struct {
-
-/// Graph with dynamic node type. Underline is an adj list of usize.
-/// If node type is of Int, directly store inside the [n]ArrayList.
-/// If node type is of anything else, it need to provide a bidirectional hash function <-> int.
-/// Allocator: Local arena + heap based bump allocator. Free or reset after each use.
-pub fn Graph(comptime node_type: type, comptime weight_type: type, max_n: comptime_int, comptime is_bidirectional: comptime_int) type {
-    _ = &is_bidirectional; // Ensure the parameter is considered used
-    return struct {
-        // Data structure for outside edge: an edge from u -w> v
-        pub const E = struct {
-            u: node_type,
-            v: node_type,
-            w: weight_type,
-        };
-
-        // Data structure for a graph edge
-        pub const GE = struct {
-            v: usize,
-            w: weight_type,
-        };
-
-        g: [max_n]std.ArrayList(GE),
-        gpa: std.mem.Allocator,
-        n: usize,
-
-        const Self = @This();
-
-        pub fn new() Self {
-            return Self{
-                .g = undefined,
-                .gpa = undefined,
-                .n = undefined,
-            };
-        }
-
-        pub fn init(self: *Self, gpa: std.mem.Allocator, n: usize) void {
-            self.gpa = gpa;
-            self.n = n;
-            for (0..n) |i| {
-                self.g[i] = std.ArrayList(GE).initCapacity(gpa, 100) catch unreachable;
-            }
-        }
-
-        pub fn fromEdgesUnweighted(self: *Self, gpa: std.mem.Allocator, n: usize, edges: []const E) Self {
-            @branchHint(.likely);
-            self.init(gpa, n);
-            // All array list is of different memory so cannot @splat.
-            switch (@typeInfo(node_type)) {
-                .int => {
-                    for (edges) |e| {
-                        self.g[e.u].append(gpa, GE{
-                            .v = e.v,
-                            .w = e.w,
-                        }) catch unreachable;
-                        if (is_bidirectional > 0) {
-                            self.g[e.v].append(gpa, GE{
-                                .v = e.u,
-                                .w = e.w,
-                            }) catch unreachable;
-                        }
-                    }
-                },
-                else => {
-                    // Need to provide a hash / unhash function
-                    for (edges) |e| {
-                        self.g[e.u.hash()].append(gpa, GE{
-                            .v = e.v.hash(),
-                            .w = e.w,
-                        }) catch unreachable;
-                        if (is_bidirectional > 0) {
-                            self.g[e.v.hash()].append(gpa, GE{
-                                .v = e.u.hash(),
-                                .w = e.w,
-                            }) catch unreachable;
-                        }
-                    }
-                },
-            }
-            return self.*;
-        }
-
-        /// When using the graph, assume all usize. Convert outside via hash / unhash should needed.
-        pub fn get(self: *const Self, u: usize) []GE {
-            @branchHint(.likely);
-            return self.g[u].items;
-        }
-
-        /// Reset state but keep allocated memory for multiple test cases usage.
-        pub fn reset(self: *Self) void {
-            for (0..self.n) |i| {
-                self.g[i].shrinkRetainingCapacity(0);
-            }
-        }
-
-        pub fn deinit(self: *Self) void {
-            for (0..self.n) |i| {
-                self.g[i].deinit(self.gpa);
-            }
-        }
-
-        // ================================ Classic algo =================
-
-        /// Minimal DFS from a vertex. Create a DFS struct that contains needed infomation.
-        /// Probably never use, usually for reference only so we can expand.
-        pub fn makeDFS() type {
-            @branchHint(.cold);
-            return struct {
-                pub var used: [max_n]bool = @splat(false);
-
-                pub fn dfs(u: usize, g: *const Self) void {
-                    used[u] = true;
-                    for (g.get(u)) |*ge| {
-                        if (!used[ge.v]) {
-                            dfs(ge.v, g);
-                        }
-                    }
-                }
-            };
-        }
-
-        /// Minimal BFS from starting vertices. Create a BFS struct that contains needed infomation.
-        pub fn makeBFS() type {
-            return struct {
-                var q = ds.Deque(usize, max_n * 10).new();
-                var in_queue: [max_n]bool = @splat(false);
-                var distance: [max_n]u32 = @splat(1000000000);
-
-                fn bfs(starts: []const usize, g: *const Self) void {
-                    for (starts) |u| {
-                        q.push_back(&u);
-                        distance[u] = 0;
-                        in_queue[u] = true;
-                    }
-                    while (true) {
-                        if (q.pop_front()) |u| {
-                            for (g.get(u)) |*ge| {
-                                if (in_queue[ge.v]) {
-                                    continue;
-                                }
-                                distance[ge.v] = distance[u] + 1;
-                                q.push_back(&ge.v);
-                                in_queue[ge.v] = true;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            };
-        }
-
-        /// Minimal topo structures. `order` should be get after calling `getTopoOrder`.
-        pub fn makeTopo() type {
-            return struct {
-                var state: [max_n]u8 = @splat(0);
-                // Reverse order is the topo order
-                pub var order: [max_n]usize = undefined;
-                pub var size: usize = 0;
-
-                fn dfs(u: usize, g: *const Self) bool {
-                    state[u] = 1;
-                    for (g.get(u)) |*ge| {
-                        if (state[ge.v] == 1) {
-                            // Loop found
-                            return false;
-                        }
-                        if (state[ge.v] == 0) {
-                            // New vertext
-                            const child_dfs_res = dfs(ge.v, g);
-                            if (!child_dfs_res) {
-                                return false;
-                            }
-                        }
-                    }
-                    state[u] = 2;
-                    order[size] = u;
-                    size += 1;
-                    return true;
-                }
-
-                /// Recursively get the topological order.
-                /// The `order` is the reverse order.
-                pub fn getTopoOrder(g: *const Self) bool {
-                    for (0..g.n) |u| {
-                        if (state[u] == 0) {
-                            const dfs_res = dfs(u, g);
-                            if (!dfs_res) {
-                                return false;
-                            }
-                        }
-                    }
-                    return true;
-                }
-            };
-        }
-    };
-}
-
-// ================================== Vertex types ==============================
-
-/// GridPoint that provide hash / unhash to be able to use as a graph.
-/// y = 0..m
-pub fn GridPoint(m: comptime_int) type {
-    return struct {
-        x: usize,
-        y: usize,
-
-        const Self = @This();
-
-        pub fn hash(self: *const Self) usize {
-            return self.x * m + self.y;
-        }
-
-        pub fn unhash(u: usize) Self {
-            return Self{
-                .x = u / m,
-                .y = u % m,
-            };
-        }
-    };
-}
-
-/// Simple string hashing via counting with Trie.
-/// To use, first you need to add all needed strings.
-pub const StringVertices = struct {
-    const uth = string.UniqueHashTrieNodeType;
-    const trie_type = string.Trie(128, 0, uth);
-
-    all_str: [1000][]const u8, // Mapping from pos to string
-    trie: trie_type,
-    al: allocator.BumpAllo(0, []const u8),
-    cur_mx: usize,
-
-    const Self = @This();
-
-    pub const StringVertex = struct {
-        str: []const u8,
-        parent: *Self,
-
-        const Inner = @This();
-
-        pub fn hash(self: *const Inner) usize {
-            const res = self.parent.trie.get(self.str);
-            if (res[1] == self.str.len - 1) {
-                return res[0].value;
-            }
-            return 1000000000; // LOL???
-        }
-    };
-
-    pub fn new() Self {
-        var self = Self{
-            .al = .init(),
-            .all_str = undefined,
-            .trie = trie_type.new(),
-            .cur_mx = 0,
-        };
-        self.all_str = undefined;
-
-        return self;
-    }
-
-    pub fn newStrV(self: *Self, data: []const u8) StringVertex {
-        return StringVertex{
-            .str = data,
-            .parent = self,
-        };
-    }
-
-    pub fn add(self: *Self, data: []const u8) void {
-        if (self.trie.add(data)) {
-            const v = self.trie.get(data)[0].value;
-            self.all_str[v] = data;
-            self.cur_mx = v + 1;
-        }
-    }
-
-    pub fn unhash(self: *const Self, u: usize) StringVertex {
-        return StringVertex{
-            .str = self.all_str[u],
-            .parent = undefined, // No need
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        self.al.deinit();
-        self.trie.deinit();
-    }
-};
-
-// =============================== Usage as test =======================
-
-};
 const utils = struct {
 
 /// Compute (base^exponent) mod modu using binary exponentiation (comptime)
@@ -772,6 +68,83 @@ pub fn mod_inverse(x: usize, modu: usize) usize {
     return pow_mod(x, modu - 2, modu);
 }
 
+/// Compute greatest common divisor of two u64 numbers using Euclidean algorithm
+pub fn gcd(a: u64, b: u64) u64 {
+    var x = a;
+    var y = b;
+    while (y != 0) {
+        const temp = y;
+        y = x % y;
+        x = temp;
+    }
+    return x;
+}
+
+/// Compute absolute value of an i64 and return as u64
+pub fn abs_i64(x: i64) u64 {
+    if (x == std.math.minInt(i64)) {
+        return 9223372036854775808;
+    }
+    return if (x >= 0) @intCast(x) else @intCast(-x);
+}
+
+/// Compute absolute value of any integer type, returns unsigned type of same bit width for signed integers
+pub fn abs(comptime T: type, x: T) T {
+    return switch (@typeInfo(T)) {
+        .int => |int_info| switch (int_info.signedness) {
+            .unsigned => x,
+            .signed => if (x == std.math.minInt(T))
+                @as(T, 1) << (int_info.bits - 1)
+            else if (x >= 0) @intCast(x) else @intCast(-x),
+        },
+        else => @compileError("abs only accepts integer types"),
+    };
+}
+
+/// Find the largest element < x in a sorted slice using binary search
+fn findClosestLower(slice: []const usize, x: usize) ?usize {
+    if (slice.len == 0) return null;
+    if (slice[0] >= x) return null;
+    if (slice[slice.len - 1] < x) return slice[slice.len - 1];
+
+    var low: usize = 0;
+    var high: usize = slice.len - 1;
+    var result: ?usize = null;
+    while (low <= high) {
+        const mid = low + (high - low) / 2;
+        const val = slice[mid];
+        if (val < x) {
+            result = val;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    return result;
+}
+
+/// Find the smallest element > x in a sorted slice using binary search
+fn findClosestUpper(slice: []const usize, x: usize) ?usize {
+    if (slice.len == 0) return null;
+    if (slice[slice.len - 1] <= x) return null;
+    if (slice[0] > x) return slice[0];
+
+    var low: usize = 0;
+    var high: usize = slice.len - 1;
+    var result: ?usize = null;
+    while (low <= high) {
+        const mid = low + (high - low) / 2;
+        const val = slice[mid];
+        if (val > x) {
+            result = val;
+            high = mid - 1;
+        } else {
+            low = mid + 1;
+        }
+    }
+    return result;
+}
+
 };
 const modint = struct {
 
@@ -836,7 +209,10 @@ pub fn MontgomeryModint(comptime MOD_ARG: u32) type {
 
         pub fn inv(a: Self) Self {
             // Fermat's little theorem: inv(x) = x^(MOD-2) mod MOD
-            const exponent = MOD_ARG - 2;
+            return a.pow(MOD_ARG - 2);
+        }
+
+        pub fn pow(a: Self, exponent: u32) Self {
             var result = Self.fromInt(1);
             var base = a;
             var e = exponent;
@@ -857,6 +233,486 @@ pub const Modint998244353 = MontgomeryModint(998244353);
 /// Predefined MontgomeryModint for modulus 1000000007 (32-bit, common in programming contests)
 pub const Modint1000000007 = MontgomeryModint(1000000007);
 
+};
+const combinatorics = struct {
+
+/// Calculate combination C(n, k) using multiplicative formula to avoid overflow as much as possible.
+/// Time complexity: O(k)
+/// Space complexity: O(1)
+pub fn comb(n: usize, k: usize) usize {
+    if (k > n) return 0;
+    if (k == 0 or k == n) return 1;
+
+    // Take advantage of symmetry C(n, k) = C(n, n-k)
+    const k_min = if (k > n - k) n - k else k;
+
+    var res: usize = 1;
+    var i: usize = 1;
+    while (i <= k_min) : (i += 1) {
+        res = res * (n - k_min + i) / i;
+    }
+
+    return res;
+}
+
+/// Number of weak compositions of `total` into `parts` non-negative parts.
+/// Twelvefold way: indistinguishable balls (`total`) into distinguishable bins (`parts`),
+/// bins allowed to be empty. Also known as "stars and bars".
+/// Formula: C(total + parts - 1, parts - 1) = C(total + parts - 1, total)
+pub fn weakComposition(parts: usize, total: usize) usize {
+    if (parts == 0) return if (total == 0) 1 else 0;
+    return comb(total + parts - 1, total);
+}
+
+/// Number of (positive) compositions of `total` into `parts` positive parts.
+/// Twelvefold way: indistinguishable balls (`total`) into distinguishable bins (`parts`),
+/// no bin empty. Each part must be >= 1.
+/// Formula: C(total - 1, parts - 1)
+pub fn composition(parts: usize, total: usize) usize {
+    if (parts == 0) return if (total == 0) 1 else 0;
+    if (total < parts) return 0;
+    return comb(total - 1, parts - 1);
+}
+
+/// Backward-compatible alias for `weakComposition` (stars and bars).
+pub fn starsAndBars(bins: usize, balls: usize) usize {
+    return weakComposition(bins, balls);
+}
+
+/// General function: calculate number of ways to choose k slots from n,
+/// where picking a slot blocks the next m slots from being picked.
+/// Formula: C(n - m*(k - 1), k)
+pub fn nonConsecutiveGeneral(n: usize, k: usize, m: usize) usize {
+    if (k == 0) return 1;
+    if (k > n) return 0;
+    const required = m * (k - 1);
+    if (n < required + k) return 0; // Need at least k + m*(k-1) slots
+    return comb(n - required, k);
+}
+
+/// Calculate the number of ways to choose k non-consecutive slots from n slots.
+/// (Special case: m=1, blocks 1 slot after each pick)
+/// Formula: C(n - k + 1, k)
+pub fn nonConsecutive(n: usize, k: usize) usize {
+    return nonConsecutiveGeneral(n, k, 1);
+}
+
+/// Calculate the number of ways to choose k slots from n, where picking a slot
+/// blocks the next 2 slots (i+1 and i+2) from being picked.
+/// (Special case: m=2)
+/// Formula: C(n - 2*(k - 1), k)
+pub fn nonConsecutiveBlock2(n: usize, k: usize) usize {
+    return nonConsecutiveGeneral(n, k, 2);
+}
+
+// ==========================================
+// Modular combinatorics for large numbers
+// ==========================================
+
+/// Compute (base^exponent) mod modu using binary exponentiation.
+/// Time complexity: O(log exponent)
+pub const pow_mod = utils.pow_mod;
+pub const mod_inverse = utils.mod_inverse;
+
+/// Compute C(a, b) mod p where p is prime and 0 ≤ b ≤ a < p.
+/// Uses multiplicative formula and Fermat's Little Theorem for inverses.
+pub fn comb_mod_small(a: usize, b: usize, p: usize) usize {
+    if (b > a) return 0;
+    if (b == 0 or b == a) return 1;
+
+    // Use symmetry to minimize calculations
+    const k = if (b > a - b) a - b else b;
+
+    var numerator: usize = 1;
+    var denominator: usize = 1;
+
+    var i: usize = 0;
+    while (i < k) : (i += 1) {
+        numerator = (numerator * (a - i)) % p;
+        denominator = (denominator * (i + 1)) % p;
+    }
+
+    return (numerator * mod_inverse(denominator, p)) % p;
+}
+
+/// Compute C(n, k) mod p where p is prime using Lucas Theorem.
+/// Works for very large n and k (up to 1e18 or more).
+pub fn comb_mod_lucas(n: usize, k: usize, p: usize) usize {
+    if (k > n) return 0;
+    if (k == 0 or k == n) return 1;
+
+    var result: usize = 1;
+    var a = n;
+    var b = k;
+
+    while (a > 0 or b > 0) {
+        const ai = a % p;
+        const bi = b % p;
+
+        if (bi > ai) {
+            return 0;
+        }
+
+        result = (result * comb_mod_small(ai, bi, p)) % p;
+
+        a = a / p;
+        b = b / p;
+    }
+
+    return result;
+}
+
+/// Number of weak compositions of `total` into `parts` non-negative parts, modulo p.
+/// Twelvefold way: indistinguishable balls into distinguishable bins, bins may be empty.
+/// Formula: C(total + parts - 1, total) mod p
+pub fn weakCompositionMod(parts: usize, total: usize, p: usize) usize {
+    if (parts == 0) return if (total == 0) 1 % p else 0;
+    return comb_mod_lucas(total + parts - 1, total, p);
+}
+
+/// Number of (positive) compositions of `total` into `parts` positive parts, modulo p.
+/// Twelvefold way: indistinguishable balls into distinguishable bins, no bin empty.
+/// Formula: C(total - 1, parts - 1) mod p
+pub fn compositionMod(parts: usize, total: usize, p: usize) usize {
+    if (parts == 0) return if (total == 0) 1 % p else 0;
+    if (total < parts) return 0;
+    return comb_mod_lucas(total - 1, parts - 1, p);
+}
+
+/// Backward-compatible alias for `weakCompositionMod` (stars and bars mod p).
+pub fn starsAndBarsMod(bins: usize, balls: usize, p: usize) usize {
+    return weakCompositionMod(bins, balls, p);
+}
+
+/// General function (modular): calculate number of ways to choose k slots from n,
+/// where picking a slot blocks the next m slots from being picked, modulo p.
+/// Formula: C(n - m*(k - 1), k) mod p
+pub fn nonConsecutiveGeneralMod(n: usize, k: usize, m: usize, p: usize) usize {
+    if (k == 0) return 1;
+    if (k > n) return 0;
+    const required = m * (k - 1);
+    if (n < required + k) return 0;
+    return comb_mod_lucas(n - required, k, p);
+}
+
+/// Calculate the number of ways to choose k non-consecutive slots from n slots modulo p.
+/// (Special case: m=1, blocks 1 slot after each pick)
+/// Formula: C(n - k + 1, k) mod p
+pub fn nonConsecutiveMod(n: usize, k: usize, p: usize) usize {
+    return nonConsecutiveGeneralMod(n, k, 1, p);
+}
+
+/// Calculate the number of ways to choose k slots from n (blocking next 2 slots) modulo p.
+/// (Special case: m=2)
+/// Formula: C(n - 2*(k - 1), k) mod p
+pub fn nonConsecutiveBlock2Mod(n: usize, k: usize, p: usize) usize {
+    return nonConsecutiveGeneralMod(n, k, 2, p);
+}
+
+/// Precomputed factorials and inverse factorials for a given MontgomeryModint type
+pub fn CombinatoricModint(comptime MintType: type) type {
+    return struct {
+        const Self = @This();
+
+        fact: []MintType,
+        inv_fact: []MintType,
+        gpa: std.mem.Allocator,
+
+        pub fn init(gpa: std.mem.Allocator, max_n: u64) !Self {
+            var fact = try gpa.alloc(MintType, max_n + 1);
+            errdefer gpa.free(fact);
+
+            var inv_fact = try gpa.alloc(MintType, max_n + 1);
+            errdefer gpa.free(inv_fact);
+
+            fact[0] = MintType.fromInt(1);
+            for (1..max_n + 1) |i| {
+                fact[i] = fact[i - 1].mul(MintType.fromInt(@intCast(i)));
+            }
+
+            inv_fact[max_n] = blk: {
+                const inv = utils.pow_mod_big(fact[max_n].toInt(), MintType.MOD - 2, MintType.MOD);
+                break :blk MintType.fromInt(@intCast(inv));
+            };
+            var i: u64 = max_n;
+            while (i >= 1) : (i -= 1) {
+                inv_fact[i - 1] = inv_fact[i].mul(MintType.fromInt(@intCast(i)));
+            }
+
+            return Self{
+                .fact = fact,
+                .inv_fact = inv_fact,
+                .gpa = gpa,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.gpa.free(self.fact);
+            self.gpa.free(self.inv_fact);
+        }
+
+        pub fn comb(self: *const Self, n: u64, k: u64) MintType {
+            if (k > n) return MintType.fromInt(0);
+            if (k == 0 or k == n) return MintType.fromInt(1);
+            return self.fact[n].mul(self.inv_fact[k]).mul(self.inv_fact[n - k]);
+        }
+
+        /// Number of weak compositions of `total` into `parts` non-negative parts.
+        /// Twelvefold way: indistinguishable balls into distinguishable bins, bins may be empty.
+        pub fn weakComposition(self: *const Self, parts: u64, total: u64) MintType {
+            if (parts == 0) return if (total == 0) MintType.fromInt(1) else MintType.fromInt(0);
+            return self.comb(total + parts - 1, total);
+        }
+
+        /// Number of (positive) compositions of `total` into `parts` positive parts.
+        /// Twelvefold way: indistinguishable balls into distinguishable bins, no bin empty.
+        pub fn composition(self: *const Self, parts: u64, total: u64) MintType {
+            if (parts == 0) return if (total == 0) MintType.fromInt(1) else MintType.fromInt(0);
+            if (total < parts) return MintType.fromInt(0);
+            return self.comb(total - 1, parts - 1);
+        }
+
+        /// Backward-compatible alias for `weakComposition` (stars and bars).
+        pub fn starsAndBars(self: *const Self, bins: u64, balls: u64) MintType {
+            return self.weakComposition(bins, balls);
+        }
+
+        /// General function: calculate number of ways to choose k slots from n,
+        /// where picking a slot blocks the next m slots from being picked.
+        pub fn nonConsecutiveGeneral(self: *const Self, n: u64, k: u64, m: u64) MintType {
+            if (k == 0) return MintType.fromInt(1);
+            if (k > n) return MintType.fromInt(0);
+            const required = m * (k - 1);
+            if (n < required + k) return MintType.fromInt(0);
+            return self.comb(n - required, k);
+        }
+
+        /// Calculate the number of ways to choose k non-consecutive slots from n slots.
+        /// (Special case: m=1, blocks 1 slot after each pick)
+        pub fn nonConsecutive(self: *const Self, n: u64, k: u64) MintType {
+            return self.nonConsecutiveGeneral(n, k, 1);
+        }
+
+        /// Calculate the number of ways to choose k slots from n, where picking a slot
+        /// blocks the next 2 slots (i+1 and i+2) from being picked.
+        /// (Special case: m=2)
+        pub fn nonConsecutiveBlock2(self: *const Self, n: u64, k: u64) MintType {
+            return self.nonConsecutiveGeneral(n, k, 2);
+        }
+    };
+}
+
+// ==========================================
+// Permutation cycle splitting
+
+/// Result of splitting a permutation into cycles.
+pub const CycleSplit = struct {
+    /// `root[i]` = the representative (smallest index) of the cycle containing position `i`.
+    root: []usize,
+    /// `length[i]` = size of the cycle containing `i` if `i` is the cycle's root, otherwise 0.
+    length: []usize,
+    /// `roots[c]` = the representative of the `c`-th cycle, for `c` in `0..cycle_count`.
+    /// Listed in increasing order (the order in which cycles are discovered).
+    roots: []usize,
+    /// Total number of cycles in the permutation.
+    cycle_count: usize,
+    gpa: std.mem.Allocator,
+
+    pub fn deinit(self: *CycleSplit) void {
+        self.gpa.free(self.root);
+        self.gpa.free(self.length);
+        self.gpa.free(self.roots);
+    }
+};
+
+/// Split a permutation into cycles.
+pub fn cycleSplit(gpa: std.mem.Allocator, perm: []const usize) !CycleSplit {
+    const n = perm.len;
+    var root = try gpa.alloc(usize, n);
+    errdefer gpa.free(root);
+    var length = try gpa.alloc(usize, n);
+    errdefer gpa.free(length);
+    var visited = try gpa.alloc(bool, n);
+    defer gpa.free(visited);
+    @memset(visited, false);
+    @memset(length, 0);
+
+    var roots_list: std.ArrayList(usize) = .empty;
+    errdefer roots_list.deinit(gpa);
+
+    for (0..n) |start| {
+        if (visited[start]) continue;
+        var j: usize = start;
+        var len: usize = 0;
+        while (!visited[j]) {
+            visited[j] = true;
+            root[j] = start;
+            len += 1;
+            j = perm[j];
+        }
+        length[start] = len;
+        try roots_list.append(gpa, start);
+    }
+
+    const roots = try roots_list.toOwnedSlice(gpa);
+
+    return CycleSplit{
+        .root = root,
+        .length = length,
+        .roots = roots,
+        .cycle_count = roots.len,
+        .gpa = gpa,
+    };
+}
+
+pub fn permPow(gpa: std.mem.Allocator, perm: []const usize, k: usize) ![]usize {
+    const n = perm.len;
+    var result = try gpa.alloc(usize, n);
+    errdefer gpa.free(result);
+    if (n == 0) return result;
+
+    var cs = try cycleSplit(gpa, perm);
+    defer cs.deinit();
+
+    for (cs.roots) |r| {
+        const L = cs.length[r];
+        const kk = k % L; // rotation amount on this cycle
+        // Step 1: walk kk steps from r to get the anchor y = sigma^kk(r).
+        var y: usize = r;
+        var s: usize = 0;
+        while (s < kk) : (s += 1) y = perm[y];
+        result[r] = y;
+        // Step 2: propagate around the cycle: result[sigma(a)] = sigma(result[a]).
+        var a: usize = r;
+        var b: usize = perm[r];
+        while (b != r) {
+            result[b] = perm[result[a]];
+            a = b;
+            b = perm[b];
+        }
+    }
+
+    return result;
+}
+
+// ------------------------------------------
+// Cycle-type enumeration (integer partitions of n as cycle spectra)
+//
+// A cycle type is a vector `a[1..n]` where `a[i]` is the number of i-cycles;
+// it must satisfy sum(i * a[i]) = n. Every such type is realised by exactly
+//   n! / product(i^a[i] * a[i]!)
+// labelled permutations, and the order of any permutation of that type is
+//   lcm(i : a[i] > 0).
+// Many problems (e.g. ABC226 F) sum a function of the order over all types,
+// weighted by the above multiplicity, so this routine threads the LCM and the
+// modular denominator through the recursion and hands a finished type to a
+// caller-supplied visitor.
+
+/// Exact gcd on u128. Required because the LCM of cycle lengths for n up to
+/// ~50 (Landau's function g(n)) can exceed u64, so the u64 gcd in `utils` is
+/// not enough here.
+fn gcdU128(a_initial: u128, b_initial: u128) u128 {
+    var a = a_initial;
+    var b = b_initial;
+    while (b != 0) {
+        const r = a % b;
+        a = b;
+        b = r;
+    }
+    return a;
+}
+
+/// Fold `cycle_len` into the running LCM. `current_lcm` is kept exact (u128).
+fn lcmWithCycle(current_lcm: u128, cycle_len: usize) u128 {
+    const length: u128 = @intCast(cycle_len);
+    return current_lcm / gcdU128(current_lcm, length) * length;
+}
+
+/// Enumerate every cycle type of `n` in decreasing cycle length, calling
+/// `visit` once per complete type with `(lcm, denominator, n_factorial)`:
+///   * `lcm`          — exact lcm of all used cycle lengths (u128);
+///   * `denominator`  — product(i^a[i] * a[i]!) modulo `MintType.MOD`;
+///   * `n_factorial`  — n! modulo `MintType.MOD` (read off `comb.fact[n]`).
+///
+/// `visit` is a comptime function `fn (*Context, u128, MintType, MintType) void`
+/// so the leaf action — turning a cycle type into a problem-specific score
+/// contribution — stays with the caller and this routine stays generic.
+pub fn enumerateCycleTypes(
+    comptime MintType: type,
+    comptime Context: type,
+    comptime visit: fn (*Context, u128, MintType, MintType) void,
+    comb_table: *const CombinatoricModint(MintType),
+    context: *Context,
+    max_cycle_len: usize,
+    remaining: usize,
+    current_lcm: u128,
+    denominator: MintType,
+    n_factorial: MintType,
+) void {
+    if (remaining == 0) {
+        // TODO: score counting is problem-specific. This leaf only forwards
+        // (lcm, denominator, n_factorial) to `visit`; a typical caller adds
+        //   lcm^K * n! / denominator
+        // to its answer (as in ABC226 F, where the score is the permutation
+        // order raised to the K-th power), but any function of the cycle type
+        // fits in the callback — e.g. just counting types, or summing n!/
+        // denominator to verify the partition-of-identity invariant.
+        visit(context, current_lcm, denominator, n_factorial);
+        return;
+    }
+    if (max_cycle_len == 0) return;
+
+    // Every length greater than `remaining` has forced multiplicity zero.
+    const cycle_len = @min(max_cycle_len, remaining);
+
+    // At the last possible length, all remaining elements must be 1-cycles.
+    // This avoids visiting invalid leaves with remaining > 0 and no lengths.
+    if (cycle_len == 1) {
+        const final_denominator = denominator.mul(comb_table.fact[remaining]);
+        visit(context, current_lcm, final_denominator, n_factorial);
+        return;
+    }
+
+    const cycle_len_mint = MintType.fromInt(@intCast(cycle_len));
+    var count = remaining / cycle_len;
+    while (true) {
+        const used = cycle_len * count;
+        const next_lcm = if (count == 0)
+            current_lcm
+        else
+            lcmWithCycle(current_lcm, cycle_len);
+        // i^a[i] * a[i]!  — the a[i]! part reuses the shared factorial table.
+        const next_denominator = denominator
+            .mul(cycle_len_mint.pow(@intCast(count)))
+            .mul(comb_table.fact[count]);
+
+        enumerateCycleTypes(
+            MintType,
+            Context,
+            visit,
+            comb_table,
+            context,
+            cycle_len - 1,
+            remaining - used,
+            next_lcm,
+            next_denominator,
+            n_factorial,
+        );
+
+        // Pick a[cycle_len] from large to small without unsigned underflow.
+        if (count == 0) break;
+        count -= 1;
+    }
+}
+
+};
+const allocator = struct {
+const heap = std.heap;
+const Allocator = std.mem.Allocator;
+
+/// Global heap + arena for quick various tasks.
+/// Reset it yourself after each test cases.
+pub var arena = heap.ArenaAllocator.init(heap.page_allocator);
 };
 const fft = struct {
 
@@ -1727,328 +1583,196 @@ pub const FpsFft = struct {
 };
 
 };
-const FPS = fps.FpsFft;
+const prime = struct {
+
+/// Compute natural log of x (comptime)
+fn comptime_ln(x: comptime_float) comptime_float {
+    return @log(x);
+}
+
+/// PrimeDS is a generic struct that holds primes up to max_n (comptime)
+pub fn PrimeDS(comptime max_n: comptime_int) type {
+    // Approximate number of primes up to max_n: ~max_n / ln(max_n), multiply by 2 to be safe
+    const approx_primes = if (max_n < 2) 0 else blk: {
+        const x = @as(comptime_float, @floatFromInt(max_n));
+        const ln_x = comptime_ln(x);
+        const est = x / ln_x;
+        break :blk @as(comptime_int, @intFromFloat(@ceil(est * 2)));
+    };
+
+    return struct {
+        const Self = @This();
+
+        pub const Factor = struct {
+            prime: usize,
+            exponent: usize,
+        };
+
+        primes: [approx_primes]usize,
+        prime_count: usize,
+        is_prime: [max_n + 1]bool,
+        factors: [MAX_FACTORS]Factor,
+        factor_count: usize,
+
+        // Maximum number of distinct prime factors (for numbers up to 2^64, it's at most 15)
+        const MAX_FACTORS = 20;
+
+        /// Initialize PrimeDS using linear sieve (Euler's sieve)
+        pub fn init() Self {
+            var self = Self{
+                .primes = if (approx_primes == 0) [_]usize{} else undefined,
+                .prime_count = 0,
+                .is_prime = [_]bool{true} ** (max_n + 1),
+                .factors = undefined,
+                .factor_count = 0,
+            };
+
+            if (max_n >= 0) self.is_prime[0] = false;
+            if (max_n >= 1) self.is_prime[1] = false;
+
+            if (max_n >= 2) {
+                var i: usize = 2;
+                while (i <= max_n) : (i += 1) {
+                    if (self.is_prime[i]) {
+                        self.primes[self.prime_count] = i;
+                        self.prime_count += 1;
+                    }
+                    var j: usize = 0;
+                    while (j < self.prime_count) : (j += 1) {
+                        const p = self.primes[j];
+                        const product = i * p;
+                        if (product > max_n) break;
+                        self.is_prime[product] = false;
+                        if (i % p == 0) break;
+                    }
+                }
+            }
+
+            return self;
+        }
+
+        /// Get the primes slice
+        pub fn primesSlice(self: *const Self) []const usize {
+            return self.primes[0..self.prime_count];
+        }
+
+        /// Return the closest prime <= x, or null if none exists
+        pub fn closestPrimeLower(self: *const Self, x: usize) ?usize {
+            if (x < 2) return null;
+            const primes_slice = self.primesSlice();
+            if (primes_slice.len == 0) return null;
+            if (primes_slice[0] > x) return null;
+            if (primes_slice[primes_slice.len - 1] <= x) return primes_slice[primes_slice.len - 1];
+            
+            var low: usize = 0;
+            var high: usize = primes_slice.len - 1;
+            var result: ?usize = null;
+            while (low <= high) {
+                const mid = low + (high - low) / 2;
+                const p = primes_slice[mid];
+                if (p == x) {
+                    return p;
+                } else if (p < x) {
+                    result = p;
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            return result;
+        }
+
+        /// Return the closest prime >= x, or null if none exists
+        pub fn closestPrimeUpper(self: *const Self, x: usize) ?usize {
+            if (x > max_n) return null;
+            const primes_slice = self.primesSlice();
+            if (primes_slice.len == 0) return null;
+            if (primes_slice[primes_slice.len - 1] < x) return null;
+            if (primes_slice[0] >= x) return primes_slice[0];
+            
+            var low: usize = 0;
+            var high: usize = primes_slice.len - 1;
+            var result: ?usize = null;
+            while (low <= high) {
+                const mid = low + (high - low) / 2;
+                const p = primes_slice[mid];
+                if (p == x) {
+                    return p;
+                } else if (p > x) {
+                    result = p;
+                    high = mid - 1;
+                } else {
+                    low = mid + 1;
+                }
+            }
+            return result;
+        }
+
+        /// Factorize a number x into its prime factors, returns a slice of Factor
+        /// x must be <= max_n
+        pub fn factorize(self: *Self, x: usize) []const Factor {
+            self.factor_count = 0;
+            var n = x;
+
+            for (self.primesSlice()) |p| {
+                if (p * p > n) break;
+                if (n % p == 0) {
+                    var exp: usize = 0;
+                    while (n % p == 0) {
+                        exp += 1;
+                        n /= p;
+                    }
+                    self.factors[self.factor_count] = Factor{ .prime = p, .exponent = exp };
+                    self.factor_count += 1;
+                }
+            }
+
+            if (n > 1) {
+                self.factors[self.factor_count] = Factor{ .prime = n, .exponent = 1 };
+                self.factor_count += 1;
+            }
+
+            return self.factors[0..self.factor_count];
+        }
+    };
+}
+
+};
 
 const BUNDLE = false;
 
 // ===================== Solving =====================
 
-const gtype_solve = graph.Graph(usize, void, 200001, 1);
-const ESOLVE = gtype_solve.E;
-var gsolve = gtype_solve.new();
+const Modint = fps.Modint998244353;
+const FPS = fps.Fps998244353;
+const Combinatorics = combinatorics.CombinatoricModint(Modint);
 
-/// Main solving function for each test cases.
 pub fn solve() !void {
     defer _ = allocator.arena.reset(.retain_capacity);
-    const al = allocator.arena.allocator();
+    const gpa = allocator.arena.allocator();
 
-    var edges: [200000]ESOLVE = undefined;
-    const n = in.read(usize);
-    for (0..n - 1) |i| {
-        const u = in.read(usize) - 1;
-        const v = in.read(usize) - 1;
-        edges[i] = ESOLVE{
-            .u = u,
-            .v = v,
-            .w = undefined,
-        };
-    }
-    gsolve = gsolve.fromEdgesUnweighted(al, n, edges[0 .. n - 1]);
+    const n = in.read(u32);
 
-    const Pruner = struct {
-        const ChildParent = struct { usize, usize };
-        const CPResult = struct { ChildParent, ?ChildParent, usize };
+    const pr = prime.PrimeDS(250_000).init();
 
-        pub fn pruneToPath(gpa: std.mem.Allocator, g_ref: *const gtype_solve, num_nodes: usize) !CPResult {
-            // Step 1: Build adjacency sets and degree array
-            var adj_sets = try gpa.alloc(ds.UsizeSet, num_nodes);
-            defer {
-                for (adj_sets) |*set| {
-                    set.deinit();
-                }
-                gpa.free(adj_sets);
-            }
-            for (0..num_nodes) |i| {
-                adj_sets[i] = ds.UsizeSet.init(gpa);
-            }
+    const comb = try Combinatorics.init(gpa, n + 1);
 
-            var degree = try gpa.alloc(usize, num_nodes);
-            defer gpa.free(degree);
-            @memset(degree, 0);
-
-            for (0..num_nodes) |u| {
-                for (g_ref.get(u)) |ge| {
-                    const v = ge.v;
-                    try adj_sets[u].add(v);
-                    degree[u] += 1;
-                }
-            }
-
-            // Step 2: Collect initial leaves (degree 1)
-            var q = ds.Deque(usize, 200001).new();
-
-            for (0..num_nodes) |u| {
-                if (degree[u] == 1) {
-                    // std.debug.print("[Step 2] Adding initial leaf: {d}\n", .{u});
-                    q.push_back(&u);
-                }
-            }
-            // std.debug.print("[Step 2] Initial queue size: {d}\n", .{q.len});
-
-            // Step 3: Prune leaves until remaining <= 2
-            var step: usize = 0;
-            while (q.len > 2) {
-                step += 1;
-                const sz = q.len;
-                // std.debug.print("[Step 3] Iteration {d}, queue size: {d}\n", .{ step, sz });
-                for (0..sz) |_| {
-                    if (q.pop_front()) |u| {
-                        // Find the neighbor of u (since degree is 1 or was 1)
-                        const v = adj_sets[u].getMin() orelse adj_sets[u].getMax() orelse continue;
-                        // std.debug.print("[Step 3] Pruning leaf {d}, neighbor {d}\n", .{ u, v });
-                        // Remove u from v's adjacency set
-                        adj_sets[v].remove(u);
-                        degree[v] -= 1;
-                        if (degree[v] == 1) {
-                            // std.debug.print("[Step 3] Adding new leaf {d}\n", .{v});
-                            q.push_back(&v);
-                        }
-                    } else {
-                        break;
-                    }
-                }
-            }
-            // std.debug.print("[Step 3] Final queue size: {d}\n", .{q.len});
-
-            // Step 4: Remaining nodes are whatever is left in the queue
-            var path_nodes = std.ArrayList(usize).initCapacity(gpa, q.len) catch unreachable;
-            defer path_nodes.deinit(gpa);
-            while (q.pop_front()) |u| {
-                // std.debug.print("[Step 4] Adding path node: {d}\n", .{u});
-                path_nodes.append(gpa, u) catch unreachable;
-            }
-            // std.debug.print("[Step 4] Path nodes: {any}\n", .{path_nodes.items});
-
-            // Step 5: Return ChildParent tuple with path length
-            if (path_nodes.items.len == 1) {
-                // Single node: path length is 1
-                const u = path_nodes.items[0];
-                // std.debug.print("[Step 5] Single node: {d}, path length: 1\n", .{u});
-                return .{ .{ u, u }, null, 1 };
-            } else if (path_nodes.items.len == 2) {
-                // Two nodes: calculate path length by traversing from a to b
-                const a = path_nodes.items[0];
-                const pa = adj_sets[a].getMin().?;
-                const b = path_nodes.items[1];
-                const pb = adj_sets[b].getMin().?;
-
-                // Calculate path length
-                var path_length: usize = 0;
-                var current: usize = a;
-                var prev: usize = a; // Initialize to something, will update
-                while (true) {
-                    path_length += 1;
-                    if (current == b) {
-                        break;
-                    }
-                    // Find next node (not prev)
-                    var iter = adj_sets[current].iterator();
-                    while (iter.next()) |next_node| {
-                        if (next_node != prev or path_length == 1) {
-                            prev = current;
-                            current = next_node;
-                            break;
-                        }
-                    }
-                }
-
-                // std.debug.print("[Step 5] Two nodes: a={d}, pa={d}; b={d}, pb={d}; path length: {d}\n", .{ a, pa, b, pb, path_length });
-                return .{ .{ a, pa }, .{ b, pb }, path_length };
-            } else {
-                // Should not happen if input is a tree
-                @panic("Remaining nodes not 1 or 2!");
-            }
-        }
-    };
-
-    const prune_res = try Pruner.pruneToPath(al, &gsolve, n);
-
-    const Tree = struct {
-        count_level: []usize,
-        max_level: usize,
-        gpa: std.mem.Allocator,
-
-        const Self = @This();
-
-        pub fn new(gpa: std.mem.Allocator, max_n: usize) !Self {
-            const count_level = try gpa.alloc(usize, max_n);
-            return Self{
-                .count_level = count_level,
-                .max_level = 0,
-                .gpa = gpa,
-            };
-        }
-
-        pub fn deinit(self: Self) void {
-            self.gpa.free(self.count_level);
-        }
-
-        pub fn init(self: *Self, nn: usize) void {
-            @memset(self.count_level[0..nn], 0);
-            self.max_level = 0;
-        }
-
-        pub fn dfsCountLevel(self: *Self, u: usize, p: usize, l: usize) void {
-            self.count_level[l] += 1;
-            for (gsolve.get(u)) |*ge| {
-                if (ge.v != p) {
-                    self.dfsCountLevel(ge.v, u, l + 1);
-                }
-            }
-            self.max_level = @max(self.max_level, l);
-        }
-    };
-
-    const path_length = prune_res[2];
-
-    if (prune_res[1]) |p2| {
-        // It's a path: build two FPS using one Tree instance
-        var tree = try Tree.new(al, n);
-
-        // First pass: build FPS A
-        tree.init(n);
-        tree.dfsCountLevel(prune_res[0][0], prune_res[0][1], 0);
-        const max_degree_a = tree.max_level;
-
-        // std.debug.print("[Debug] count_level A: ", .{});
-        // for (0..max_degree_a + 1) |l| {
-        //     std.debug.print("{d} ", .{tree.count_level[l]});
-        // }
-        // std.debug.print("\n", .{});
-
-        var fps_a = try FPS.init(al, max_degree_a);
-        for (0..max_degree_a + 1) |l| {
-            fps_a.coeffs[l] = @floatFromInt(tree.count_level[l]);
-        }
-
-        tree.init(max_degree_a + 1); // Clear up to max_degree_a
-        tree.dfsCountLevel(p2[0], p2[1], 0);
-        const max_degree_b = tree.max_level;
-
-        // std.debug.print("[Debug] count_level B: ", .{});
-        // for (0..max_degree_b + 1) |l| {
-        //     std.debug.print("{d} ", .{tree.count_level[l]});
-        // }
-        // std.debug.print("\n", .{});
-
-        const max_degree = @max(max_degree_a, max_degree_b);
-        const conv_max_degree = 2 * max_degree + 2;
-
-        // Resize fps_a to conv_max_degree
-        try fps_a.resize(conv_max_degree);
-
-        // Build fps_b with conv_max_degree
-        var fps_b = try FPS.init(al, conv_max_degree);
-        for (0..max_degree_b + 1) |l| {
-            fps_b.coeffs[l] = @floatFromInt(tree.count_level[l]);
-        }
-
-        // Build fps_c as convolution of fps_a and fps_b
-        var fps_c = try FPS.fromSlice(al, fps_a.coeffs, conv_max_degree);
-        try fps_c.mul(fps_b, conv_max_degree);
-
-        // Debug print fps_c
-        // std.debug.print("[Debug] fps_c coefficients: ", .{});
-        // for (0..conv_max_degree + 1) |l| {
-        //     std.debug.print("{d} ", .{fps_c.coeffs[l].toInt()});
-        // }
-        // std.debug.print("\n", .{});
-
-        for (1..n + 1) |k| {
-            if (k < path_length) {
-                print("0\n", .{});
-                continue;
-            }
-            const d = k - path_length;
-            if (d <= conv_max_degree) {
-                print("{}\n", .{@as(u64, @intFromFloat(fps_c.coeffs[d]))});
-            } else {
-                print("0\n", .{});
-            }
-        }
-    } else {
-        // Isolated vertex case
-        const u = prune_res[0][0];
-        var tree = try Tree.new(al, n);
-
-        // First, dfs the whole tree starting at u and copy the result out
-        tree.init(n);
-        tree.dfsCountLevel(u, u, 0);
-        const whole_tree_max_degree = tree.max_level;
-        const whole_tree_count_level = try al.alloc(usize, whole_tree_max_degree + 1);
-        @memcpy(whole_tree_count_level, tree.count_level[0 .. whole_tree_max_degree + 1]);
-
-        // Debug print whole tree count_level
-        // std.debug.print("[Debug] whole tree count_level: ", .{});
-        // for (0..whole_tree_max_degree + 1) |l| {
-        //     std.debug.print("{d} ", .{whole_tree_count_level[l]});
-        // }
-        // std.debug.print("\n", .{});
-
-        const neighbors_slice = gsolve.get(u);
-
-        // Now, collect FPS for each subtree and track overall_max_degree
-        var fps_list = try std.ArrayList(FPS).initCapacity(al, neighbors_slice.len);
-
-        var overall_max_degree: usize = 0;
-        var last_degree = n;
-
-        for (neighbors_slice) |*ge| {
-            const v = ge.v;
-            tree.init(last_degree);
-            tree.dfsCountLevel(v, u, 0);
-            const subtree_max_degree = tree.max_level;
-            last_degree = subtree_max_degree + 1;
-            overall_max_degree = @max(overall_max_degree, subtree_max_degree);
-
-            // Create FPS for this subtree (we'll resize later)
-            var fps_subtree = try FPS.init(al, subtree_max_degree);
-            for (0..subtree_max_degree + 1) |l| {
-                fps_subtree.coeffs[l] = @floatFromInt(tree.count_level[l]);
-            }
-            try fps_list.append(al, fps_subtree);
-        }
-
-        overall_max_degree *= 2;
-        overall_max_degree += 2;
-
-        // Resize all FPS in fps_list to overall_max_degree
-        for (fps_list.items) |*fps_item| {
-            try fps_item.resize(overall_max_degree);
-        }
-
-        const final_fps = try FPS.sumPairwiseConvolution(al, fps_list.items, overall_max_degree);
-
-        // Debug print final_fps
-        // std.debug.print("[Debug] final_fps coefficients: ", .{});
-        // for (0..overall_max_degree + 1) |l| {
-        //     std.debug.print("{d} ", .{final_fps.coeffs[l].toInt()});
-        // }
-        // std.debug.print("\n", .{});
-
-        for (1..n + 1) |k| {
-            var ans: u64 = if (k <= whole_tree_max_degree + 1) whole_tree_count_level[k - 1] else 0;
-            // std.debug.print("ans for k = {} before adding cross: {}\n", .{ k, ans });
-            if (k >= 3 and k <= overall_max_degree + 3) {
-                // Count cross-root paths
-                // std.debug.print("Cross path count for k = {}: {}\n", .{ k, final_fps.coeffs[k - 3] });
-                ans += @intFromFloat(final_fps.coeffs[k - 3]);
-            }
-            print("{}\n", .{ans});
-        }
+    // construct egf of prime.
+    var g = try FPS.init(gpa, n);
+    g.coeffs[0] = Modint.fromInt(1);
+    var i: usize = 0;
+    while (i < pr.prime_count and pr.primes[i] <= n) : (i += 1) {
+        const p = pr.primes[i];
+        g.coeffs[p] = comb.inv_fact[p]; // x^p / p!
     }
 
-    defer gsolve.deinit();
+    // Since R = x * phi(R), apply Lagrange inversion
+    try g.pow(n, n);
+    var ans = g.coeffs[n - 1];
+    ans = ans.mul(comb.fact[n - 1]);
+    ans = ans.mul(Modint.fromInt(n).inv()); // (n - 1)! / n: fix the root label to 1
+
+    print("{}\n", .{ans.toInt()});
 }
 
 pub fn main() !void {

@@ -14,6 +14,8 @@ comptime {
     _ = @import("modint.zig");
     _ = @import("fps.zig");
     _ = @import("ntt.zig");
+    _ = @import("utils.zig");
+    _ = @import("prime.zig");
 }
 
 pub fn bufferedPrint() !void {
