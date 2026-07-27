@@ -1,4 +1,12 @@
 const std = @import("std");
+const allocator = struct {
+const heap = std.heap;
+const Allocator = std.mem.Allocator;
+
+/// Global heap + arena for quick various tasks.
+/// Reset it yourself after each test cases.
+pub var arena = heap.ArenaAllocator.init(heap.page_allocator);
+};
 const utils = struct {
 
 /// Compute (base^exponent) mod modu using binary exponentiation (comptime)
@@ -233,486 +241,6 @@ pub const Modint998244353 = MontgomeryModint(998244353);
 /// Predefined MontgomeryModint for modulus 1000000007 (32-bit, common in programming contests)
 pub const Modint1000000007 = MontgomeryModint(1000000007);
 
-};
-const combinatorics = struct {
-
-/// Calculate combination C(n, k) using multiplicative formula to avoid overflow as much as possible.
-/// Time complexity: O(k)
-/// Space complexity: O(1)
-pub fn comb(n: usize, k: usize) usize {
-    if (k > n) return 0;
-    if (k == 0 or k == n) return 1;
-
-    // Take advantage of symmetry C(n, k) = C(n, n-k)
-    const k_min = if (k > n - k) n - k else k;
-
-    var res: usize = 1;
-    var i: usize = 1;
-    while (i <= k_min) : (i += 1) {
-        res = res * (n - k_min + i) / i;
-    }
-
-    return res;
-}
-
-/// Number of weak compositions of `total` into `parts` non-negative parts.
-/// Twelvefold way: indistinguishable balls (`total`) into distinguishable bins (`parts`),
-/// bins allowed to be empty. Also known as "stars and bars".
-/// Formula: C(total + parts - 1, parts - 1) = C(total + parts - 1, total)
-pub fn weakComposition(parts: usize, total: usize) usize {
-    if (parts == 0) return if (total == 0) 1 else 0;
-    return comb(total + parts - 1, total);
-}
-
-/// Number of (positive) compositions of `total` into `parts` positive parts.
-/// Twelvefold way: indistinguishable balls (`total`) into distinguishable bins (`parts`),
-/// no bin empty. Each part must be >= 1.
-/// Formula: C(total - 1, parts - 1)
-pub fn composition(parts: usize, total: usize) usize {
-    if (parts == 0) return if (total == 0) 1 else 0;
-    if (total < parts) return 0;
-    return comb(total - 1, parts - 1);
-}
-
-/// Backward-compatible alias for `weakComposition` (stars and bars).
-pub fn starsAndBars(bins: usize, balls: usize) usize {
-    return weakComposition(bins, balls);
-}
-
-/// General function: calculate number of ways to choose k slots from n,
-/// where picking a slot blocks the next m slots from being picked.
-/// Formula: C(n - m*(k - 1), k)
-pub fn nonConsecutiveGeneral(n: usize, k: usize, m: usize) usize {
-    if (k == 0) return 1;
-    if (k > n) return 0;
-    const required = m * (k - 1);
-    if (n < required + k) return 0; // Need at least k + m*(k-1) slots
-    return comb(n - required, k);
-}
-
-/// Calculate the number of ways to choose k non-consecutive slots from n slots.
-/// (Special case: m=1, blocks 1 slot after each pick)
-/// Formula: C(n - k + 1, k)
-pub fn nonConsecutive(n: usize, k: usize) usize {
-    return nonConsecutiveGeneral(n, k, 1);
-}
-
-/// Calculate the number of ways to choose k slots from n, where picking a slot
-/// blocks the next 2 slots (i+1 and i+2) from being picked.
-/// (Special case: m=2)
-/// Formula: C(n - 2*(k - 1), k)
-pub fn nonConsecutiveBlock2(n: usize, k: usize) usize {
-    return nonConsecutiveGeneral(n, k, 2);
-}
-
-// ==========================================
-// Modular combinatorics for large numbers
-// ==========================================
-
-/// Compute (base^exponent) mod modu using binary exponentiation.
-/// Time complexity: O(log exponent)
-pub const pow_mod = utils.pow_mod;
-pub const mod_inverse = utils.mod_inverse;
-
-/// Compute C(a, b) mod p where p is prime and 0 ≤ b ≤ a < p.
-/// Uses multiplicative formula and Fermat's Little Theorem for inverses.
-pub fn comb_mod_small(a: usize, b: usize, p: usize) usize {
-    if (b > a) return 0;
-    if (b == 0 or b == a) return 1;
-
-    // Use symmetry to minimize calculations
-    const k = if (b > a - b) a - b else b;
-
-    var numerator: usize = 1;
-    var denominator: usize = 1;
-
-    var i: usize = 0;
-    while (i < k) : (i += 1) {
-        numerator = (numerator * (a - i)) % p;
-        denominator = (denominator * (i + 1)) % p;
-    }
-
-    return (numerator * mod_inverse(denominator, p)) % p;
-}
-
-/// Compute C(n, k) mod p where p is prime using Lucas Theorem.
-/// Works for very large n and k (up to 1e18 or more).
-pub fn comb_mod_lucas(n: usize, k: usize, p: usize) usize {
-    if (k > n) return 0;
-    if (k == 0 or k == n) return 1;
-
-    var result: usize = 1;
-    var a = n;
-    var b = k;
-
-    while (a > 0 or b > 0) {
-        const ai = a % p;
-        const bi = b % p;
-
-        if (bi > ai) {
-            return 0;
-        }
-
-        result = (result * comb_mod_small(ai, bi, p)) % p;
-
-        a = a / p;
-        b = b / p;
-    }
-
-    return result;
-}
-
-/// Number of weak compositions of `total` into `parts` non-negative parts, modulo p.
-/// Twelvefold way: indistinguishable balls into distinguishable bins, bins may be empty.
-/// Formula: C(total + parts - 1, total) mod p
-pub fn weakCompositionMod(parts: usize, total: usize, p: usize) usize {
-    if (parts == 0) return if (total == 0) 1 % p else 0;
-    return comb_mod_lucas(total + parts - 1, total, p);
-}
-
-/// Number of (positive) compositions of `total` into `parts` positive parts, modulo p.
-/// Twelvefold way: indistinguishable balls into distinguishable bins, no bin empty.
-/// Formula: C(total - 1, parts - 1) mod p
-pub fn compositionMod(parts: usize, total: usize, p: usize) usize {
-    if (parts == 0) return if (total == 0) 1 % p else 0;
-    if (total < parts) return 0;
-    return comb_mod_lucas(total - 1, parts - 1, p);
-}
-
-/// Backward-compatible alias for `weakCompositionMod` (stars and bars mod p).
-pub fn starsAndBarsMod(bins: usize, balls: usize, p: usize) usize {
-    return weakCompositionMod(bins, balls, p);
-}
-
-/// General function (modular): calculate number of ways to choose k slots from n,
-/// where picking a slot blocks the next m slots from being picked, modulo p.
-/// Formula: C(n - m*(k - 1), k) mod p
-pub fn nonConsecutiveGeneralMod(n: usize, k: usize, m: usize, p: usize) usize {
-    if (k == 0) return 1;
-    if (k > n) return 0;
-    const required = m * (k - 1);
-    if (n < required + k) return 0;
-    return comb_mod_lucas(n - required, k, p);
-}
-
-/// Calculate the number of ways to choose k non-consecutive slots from n slots modulo p.
-/// (Special case: m=1, blocks 1 slot after each pick)
-/// Formula: C(n - k + 1, k) mod p
-pub fn nonConsecutiveMod(n: usize, k: usize, p: usize) usize {
-    return nonConsecutiveGeneralMod(n, k, 1, p);
-}
-
-/// Calculate the number of ways to choose k slots from n (blocking next 2 slots) modulo p.
-/// (Special case: m=2)
-/// Formula: C(n - 2*(k - 1), k) mod p
-pub fn nonConsecutiveBlock2Mod(n: usize, k: usize, p: usize) usize {
-    return nonConsecutiveGeneralMod(n, k, 2, p);
-}
-
-/// Precomputed factorials and inverse factorials for a given MontgomeryModint type
-pub fn CombinatoricModint(comptime MintType: type) type {
-    return struct {
-        const Self = @This();
-
-        fact: []MintType,
-        inv_fact: []MintType,
-        gpa: std.mem.Allocator,
-
-        pub fn init(gpa: std.mem.Allocator, max_n: u64) !Self {
-            var fact = try gpa.alloc(MintType, max_n + 1);
-            errdefer gpa.free(fact);
-
-            var inv_fact = try gpa.alloc(MintType, max_n + 1);
-            errdefer gpa.free(inv_fact);
-
-            fact[0] = MintType.fromInt(1);
-            for (1..max_n + 1) |i| {
-                fact[i] = fact[i - 1].mul(MintType.fromInt(@intCast(i)));
-            }
-
-            inv_fact[max_n] = blk: {
-                const inv = utils.pow_mod_big(fact[max_n].toInt(), MintType.MOD - 2, MintType.MOD);
-                break :blk MintType.fromInt(@intCast(inv));
-            };
-            var i: u64 = max_n;
-            while (i >= 1) : (i -= 1) {
-                inv_fact[i - 1] = inv_fact[i].mul(MintType.fromInt(@intCast(i)));
-            }
-
-            return Self{
-                .fact = fact,
-                .inv_fact = inv_fact,
-                .gpa = gpa,
-            };
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.gpa.free(self.fact);
-            self.gpa.free(self.inv_fact);
-        }
-
-        pub fn comb(self: *const Self, n: u64, k: u64) MintType {
-            if (k > n) return MintType.fromInt(0);
-            if (k == 0 or k == n) return MintType.fromInt(1);
-            return self.fact[n].mul(self.inv_fact[k]).mul(self.inv_fact[n - k]);
-        }
-
-        /// Number of weak compositions of `total` into `parts` non-negative parts.
-        /// Twelvefold way: indistinguishable balls into distinguishable bins, bins may be empty.
-        pub fn weakComposition(self: *const Self, parts: u64, total: u64) MintType {
-            if (parts == 0) return if (total == 0) MintType.fromInt(1) else MintType.fromInt(0);
-            return self.comb(total + parts - 1, total);
-        }
-
-        /// Number of (positive) compositions of `total` into `parts` positive parts.
-        /// Twelvefold way: indistinguishable balls into distinguishable bins, no bin empty.
-        pub fn composition(self: *const Self, parts: u64, total: u64) MintType {
-            if (parts == 0) return if (total == 0) MintType.fromInt(1) else MintType.fromInt(0);
-            if (total < parts) return MintType.fromInt(0);
-            return self.comb(total - 1, parts - 1);
-        }
-
-        /// Backward-compatible alias for `weakComposition` (stars and bars).
-        pub fn starsAndBars(self: *const Self, bins: u64, balls: u64) MintType {
-            return self.weakComposition(bins, balls);
-        }
-
-        /// General function: calculate number of ways to choose k slots from n,
-        /// where picking a slot blocks the next m slots from being picked.
-        pub fn nonConsecutiveGeneral(self: *const Self, n: u64, k: u64, m: u64) MintType {
-            if (k == 0) return MintType.fromInt(1);
-            if (k > n) return MintType.fromInt(0);
-            const required = m * (k - 1);
-            if (n < required + k) return MintType.fromInt(0);
-            return self.comb(n - required, k);
-        }
-
-        /// Calculate the number of ways to choose k non-consecutive slots from n slots.
-        /// (Special case: m=1, blocks 1 slot after each pick)
-        pub fn nonConsecutive(self: *const Self, n: u64, k: u64) MintType {
-            return self.nonConsecutiveGeneral(n, k, 1);
-        }
-
-        /// Calculate the number of ways to choose k slots from n, where picking a slot
-        /// blocks the next 2 slots (i+1 and i+2) from being picked.
-        /// (Special case: m=2)
-        pub fn nonConsecutiveBlock2(self: *const Self, n: u64, k: u64) MintType {
-            return self.nonConsecutiveGeneral(n, k, 2);
-        }
-    };
-}
-
-// ==========================================
-// Permutation cycle splitting
-
-/// Result of splitting a permutation into cycles.
-pub const CycleSplit = struct {
-    /// `root[i]` = the representative (smallest index) of the cycle containing position `i`.
-    root: []usize,
-    /// `length[i]` = size of the cycle containing `i` if `i` is the cycle's root, otherwise 0.
-    length: []usize,
-    /// `roots[c]` = the representative of the `c`-th cycle, for `c` in `0..cycle_count`.
-    /// Listed in increasing order (the order in which cycles are discovered).
-    roots: []usize,
-    /// Total number of cycles in the permutation.
-    cycle_count: usize,
-    gpa: std.mem.Allocator,
-
-    pub fn deinit(self: *CycleSplit) void {
-        self.gpa.free(self.root);
-        self.gpa.free(self.length);
-        self.gpa.free(self.roots);
-    }
-};
-
-/// Split a permutation into cycles.
-pub fn cycleSplit(gpa: std.mem.Allocator, perm: []const usize) !CycleSplit {
-    const n = perm.len;
-    var root = try gpa.alloc(usize, n);
-    errdefer gpa.free(root);
-    var length = try gpa.alloc(usize, n);
-    errdefer gpa.free(length);
-    var visited = try gpa.alloc(bool, n);
-    defer gpa.free(visited);
-    @memset(visited, false);
-    @memset(length, 0);
-
-    var roots_list: std.ArrayList(usize) = .empty;
-    errdefer roots_list.deinit(gpa);
-
-    for (0..n) |start| {
-        if (visited[start]) continue;
-        var j: usize = start;
-        var len: usize = 0;
-        while (!visited[j]) {
-            visited[j] = true;
-            root[j] = start;
-            len += 1;
-            j = perm[j];
-        }
-        length[start] = len;
-        try roots_list.append(gpa, start);
-    }
-
-    const roots = try roots_list.toOwnedSlice(gpa);
-
-    return CycleSplit{
-        .root = root,
-        .length = length,
-        .roots = roots,
-        .cycle_count = roots.len,
-        .gpa = gpa,
-    };
-}
-
-pub fn permPow(gpa: std.mem.Allocator, perm: []const usize, k: usize) ![]usize {
-    const n = perm.len;
-    var result = try gpa.alloc(usize, n);
-    errdefer gpa.free(result);
-    if (n == 0) return result;
-
-    var cs = try cycleSplit(gpa, perm);
-    defer cs.deinit();
-
-    for (cs.roots) |r| {
-        const L = cs.length[r];
-        const kk = k % L; // rotation amount on this cycle
-        // Step 1: walk kk steps from r to get the anchor y = sigma^kk(r).
-        var y: usize = r;
-        var s: usize = 0;
-        while (s < kk) : (s += 1) y = perm[y];
-        result[r] = y;
-        // Step 2: propagate around the cycle: result[sigma(a)] = sigma(result[a]).
-        var a: usize = r;
-        var b: usize = perm[r];
-        while (b != r) {
-            result[b] = perm[result[a]];
-            a = b;
-            b = perm[b];
-        }
-    }
-
-    return result;
-}
-
-// ------------------------------------------
-// Cycle-type enumeration (integer partitions of n as cycle spectra)
-//
-// A cycle type is a vector `a[1..n]` where `a[i]` is the number of i-cycles;
-// it must satisfy sum(i * a[i]) = n. Every such type is realised by exactly
-//   n! / product(i^a[i] * a[i]!)
-// labelled permutations, and the order of any permutation of that type is
-//   lcm(i : a[i] > 0).
-// Many problems (e.g. ABC226 F) sum a function of the order over all types,
-// weighted by the above multiplicity, so this routine threads the LCM and the
-// modular denominator through the recursion and hands a finished type to a
-// caller-supplied visitor.
-
-/// Exact gcd on u128. Required because the LCM of cycle lengths for n up to
-/// ~50 (Landau's function g(n)) can exceed u64, so the u64 gcd in `utils` is
-/// not enough here.
-fn gcdU128(a_initial: u128, b_initial: u128) u128 {
-    var a = a_initial;
-    var b = b_initial;
-    while (b != 0) {
-        const r = a % b;
-        a = b;
-        b = r;
-    }
-    return a;
-}
-
-/// Fold `cycle_len` into the running LCM. `current_lcm` is kept exact (u128).
-fn lcmWithCycle(current_lcm: u128, cycle_len: usize) u128 {
-    const length: u128 = @intCast(cycle_len);
-    return current_lcm / gcdU128(current_lcm, length) * length;
-}
-
-/// Enumerate every cycle type of `n` in decreasing cycle length, calling
-/// `visit` once per complete type with `(lcm, denominator, n_factorial)`:
-///   * `lcm`          — exact lcm of all used cycle lengths (u128);
-///   * `denominator`  — product(i^a[i] * a[i]!) modulo `MintType.MOD`;
-///   * `n_factorial`  — n! modulo `MintType.MOD` (read off `comb.fact[n]`).
-///
-/// `visit` is a comptime function `fn (*Context, u128, MintType, MintType) void`
-/// so the leaf action — turning a cycle type into a problem-specific score
-/// contribution — stays with the caller and this routine stays generic.
-pub fn enumerateCycleTypes(
-    comptime MintType: type,
-    comptime Context: type,
-    comptime visit: fn (*Context, u128, MintType, MintType) void,
-    comb_table: *const CombinatoricModint(MintType),
-    context: *Context,
-    max_cycle_len: usize,
-    remaining: usize,
-    current_lcm: u128,
-    denominator: MintType,
-    n_factorial: MintType,
-) void {
-    if (remaining == 0) {
-        // TODO: score counting is problem-specific. This leaf only forwards
-        // (lcm, denominator, n_factorial) to `visit`; a typical caller adds
-        //   lcm^K * n! / denominator
-        // to its answer (as in ABC226 F, where the score is the permutation
-        // order raised to the K-th power), but any function of the cycle type
-        // fits in the callback — e.g. just counting types, or summing n!/
-        // denominator to verify the partition-of-identity invariant.
-        visit(context, current_lcm, denominator, n_factorial);
-        return;
-    }
-    if (max_cycle_len == 0) return;
-
-    // Every length greater than `remaining` has forced multiplicity zero.
-    const cycle_len = @min(max_cycle_len, remaining);
-
-    // At the last possible length, all remaining elements must be 1-cycles.
-    // This avoids visiting invalid leaves with remaining > 0 and no lengths.
-    if (cycle_len == 1) {
-        const final_denominator = denominator.mul(comb_table.fact[remaining]);
-        visit(context, current_lcm, final_denominator, n_factorial);
-        return;
-    }
-
-    const cycle_len_mint = MintType.fromInt(@intCast(cycle_len));
-    var count = remaining / cycle_len;
-    while (true) {
-        const used = cycle_len * count;
-        const next_lcm = if (count == 0)
-            current_lcm
-        else
-            lcmWithCycle(current_lcm, cycle_len);
-        // i^a[i] * a[i]!  — the a[i]! part reuses the shared factorial table.
-        const next_denominator = denominator
-            .mul(cycle_len_mint.pow(@intCast(count)))
-            .mul(comb_table.fact[count]);
-
-        enumerateCycleTypes(
-            MintType,
-            Context,
-            visit,
-            comb_table,
-            context,
-            cycle_len - 1,
-            remaining - used,
-            next_lcm,
-            next_denominator,
-            n_factorial,
-        );
-
-        // Pick a[cycle_len] from large to small without unsigned underflow.
-        if (count == 0) break;
-        count -= 1;
-    }
-}
-
-};
-const allocator = struct {
-const heap = std.heap;
-const Allocator = std.mem.Allocator;
-
-/// Global heap + arena for quick various tasks.
-/// Reset it yourself after each test cases.
-pub var arena = heap.ArenaAllocator.init(heap.page_allocator);
 };
 const fft = struct {
 
@@ -951,6 +479,64 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
         var inv_cache: []ModintType = &.{};
         var inv_cache_gpa: ?std.mem.Allocator = null;
 
+        /// Return the canonical (smaller) modular square root, or null if none exists.
+        /// MOD must be prime. Uses Tonelli-Shanks for the general odd-prime case.
+        fn scalarSqrt(value: ModintType) ?ModintType {
+            const value_int = value.toInt();
+            if (value_int == 0) return ModintType.fromInt(0);
+            if (MOD == 2) return value;
+
+            const one_value = ModintType.fromInt(1);
+            if (value.pow((MOD - 1) / 2).toInt() != one_value.toInt()) return null;
+
+            var root: ModintType = undefined;
+            if (MOD % 4 == 3) {
+                root = value.pow((MOD + 1) / 4);
+            } else {
+                var q: u32 = MOD - 1;
+                var s: u32 = 0;
+                while (q % 2 == 0) {
+                    q /= 2;
+                    s += 1;
+                }
+
+                var z_int: u32 = 2;
+                while (ModintType.fromInt(z_int).pow((MOD - 1) / 2).toInt() != MOD - 1) {
+                    z_int += 1;
+                }
+
+                var c = ModintType.fromInt(z_int).pow(q);
+                var x = value.pow((q + 1) / 2);
+                var t = value.pow(q);
+                var m = s;
+
+                while (t.toInt() != 1) {
+                    var i: u32 = 1;
+                    var t_squared = t.mul(t);
+                    while (i < m and t_squared.toInt() != 1) : (i += 1) {
+                        t_squared = t_squared.mul(t_squared);
+                    }
+                    if (i == m) return null;
+
+                    const exponent: u32 = @as(u32, 1) << @intCast(m - i - 1);
+                    const b = c.pow(exponent);
+                    const b_squared = b.mul(b);
+                    x = x.mul(b);
+                    t = t.mul(b_squared);
+                    c = b_squared;
+                    m = i;
+                }
+                root = x;
+            }
+
+            const root_int = root.toInt();
+            const other_int = MOD - root_int;
+            return if (root_int <= other_int)
+                root
+            else
+                ModintType.fromInt(other_int);
+        }
+
         /// Initialize an FPS with all zeros
         pub fn init(gpa: std.mem.Allocator, max_degree: usize) !Self {
             const coeffs = try gpa.alloc(ModintType, max_degree + 1);
@@ -1159,6 +745,108 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
             // Update self with result
             try self.resize(max_degree);
             @memcpy(self.coeffs, result.coeffs);
+        }
+
+        /// Compute the canonical FPS square root in-place modulo x^(max_degree + 1).
+        ///
+        /// Returns error.NoSquareRoot when the first non-zero degree is odd or
+        /// its coefficient is a quadratic non-residue. The all-zero series has
+        /// the all-zero square root. For two scalar roots, the smaller residue
+        /// is chosen; in particular, sqrt(1) has constant term +1.
+        pub fn sqrt(self: *Self, max_degree: usize) !void {
+            if (MOD == 2) return error.UnsupportedModulus;
+
+            var source = try Self.fromSlice(self.gpa, self.coeffs, max_degree);
+            defer source.deinit();
+
+            var first_non_zero: usize = 0;
+            while (first_non_zero <= max_degree and source.coeffs[first_non_zero].toInt() == 0) {
+                first_non_zero += 1;
+            }
+
+            if (first_non_zero > max_degree) {
+                try self.resize(max_degree);
+                @memset(self.coeffs, ModintType.fromInt(0));
+                return;
+            }
+            if (first_non_zero % 2 == 1) return error.NoSquareRoot;
+
+            const leading = source.coeffs[first_non_zero];
+            const leading_root = scalarSqrt(leading) orelse return error.NoSquareRoot;
+            const leading_inv = leading.inv();
+
+            // Remove x^first_non_zero and normalize the constant term to 1.
+            const normalized_degree = max_degree - first_non_zero;
+            var normalized = try Self.zero(self.gpa, normalized_degree);
+            defer normalized.deinit();
+            for (0..normalized_degree + 1) |i| {
+                normalized.coeffs[i] = source.coeffs[first_non_zero + i].mul(leading_inv);
+            }
+
+            // Newton iteration: q <- (q + normalized / q) / 2.
+            var result = try Self.one(self.gpa, 0);
+            defer result.deinit();
+            var current_degree: usize = 0;
+            const inv2 = ModintType.fromInt(2).inv();
+
+            while (current_degree < normalized_degree) {
+                const next_degree = @min(2 * current_degree + 1, normalized_degree);
+
+                var normalized_trunc = try Self.fromSlice(
+                    self.gpa,
+                    normalized.coeffs[0 .. next_degree + 1],
+                    next_degree,
+                );
+                defer normalized_trunc.deinit();
+
+                var result_extended = try Self.fromSlice(
+                    self.gpa,
+                    result.coeffs,
+                    next_degree,
+                );
+                defer result_extended.deinit();
+
+                var result_inv = try Self.fromSlice(
+                    self.gpa,
+                    result.coeffs,
+                    next_degree,
+                );
+                defer result_inv.deinit();
+                try result_inv.inv(next_degree);
+
+                const quotient = try Self.mulHelper(
+                    self.gpa,
+                    normalized_trunc,
+                    result_inv,
+                    next_degree,
+                );
+                defer quotient.deinit();
+
+                const new_result = try Self.addHelper(
+                    self.gpa,
+                    result_extended,
+                    quotient,
+                    next_degree,
+                );
+                for (new_result.coeffs) |*coefficient| {
+                    coefficient.* = coefficient.*.mul(inv2);
+                }
+
+                result.deinit();
+                result = new_result;
+                current_degree = next_degree;
+            }
+
+            // Restore the scalar root and half of the removed x-shift.
+            const result_shift = first_non_zero / 2;
+            var shifted_result = try Self.zero(self.gpa, max_degree);
+            defer shifted_result.deinit();
+            for (result.coeffs, 0..) |coefficient, i| {
+                shifted_result.coeffs[result_shift + i] = coefficient.mul(leading_root);
+            }
+
+            try self.resize(max_degree);
+            @memcpy(self.coeffs, shifted_result.coeffs);
         }
 
         /// Compute self^exponent using binary exponentiation or ln/exp in-place, truncating to max_degree
@@ -1583,196 +1271,57 @@ pub const FpsFft = struct {
 };
 
 };
-const prime = struct {
-
-/// Compute natural log of x (comptime)
-fn comptime_ln(x: comptime_float) comptime_float {
-    return @log(x);
-}
-
-/// PrimeDS is a generic struct that holds primes up to max_n (comptime)
-pub fn PrimeDS(comptime max_n: comptime_int) type {
-    // Approximate number of primes up to max_n: ~max_n / ln(max_n), multiply by 2 to be safe
-    const approx_primes = if (max_n < 2) 0 else blk: {
-        const x = @as(comptime_float, @floatFromInt(max_n));
-        const ln_x = comptime_ln(x);
-        const est = x / ln_x;
-        break :blk @as(comptime_int, @intFromFloat(@ceil(est * 2)));
-    };
-
-    return struct {
-        const Self = @This();
-
-        pub const Factor = struct {
-            prime: usize,
-            exponent: usize,
-        };
-
-        primes: [approx_primes]usize,
-        prime_count: usize,
-        is_prime: [max_n + 1]bool,
-        factors: [MAX_FACTORS]Factor,
-        factor_count: usize,
-
-        // Maximum number of distinct prime factors (for numbers up to 2^64, it's at most 15)
-        const MAX_FACTORS = 20;
-
-        /// Initialize PrimeDS using linear sieve (Euler's sieve)
-        pub fn init() Self {
-            var self = Self{
-                .primes = if (approx_primes == 0) [_]usize{} else undefined,
-                .prime_count = 0,
-                .is_prime = [_]bool{true} ** (max_n + 1),
-                .factors = undefined,
-                .factor_count = 0,
-            };
-
-            if (max_n >= 0) self.is_prime[0] = false;
-            if (max_n >= 1) self.is_prime[1] = false;
-
-            if (max_n >= 2) {
-                var i: usize = 2;
-                while (i <= max_n) : (i += 1) {
-                    if (self.is_prime[i]) {
-                        self.primes[self.prime_count] = i;
-                        self.prime_count += 1;
-                    }
-                    var j: usize = 0;
-                    while (j < self.prime_count) : (j += 1) {
-                        const p = self.primes[j];
-                        const product = i * p;
-                        if (product > max_n) break;
-                        self.is_prime[product] = false;
-                        if (i % p == 0) break;
-                    }
-                }
-            }
-
-            return self;
-        }
-
-        /// Get the primes slice
-        pub fn primesSlice(self: *const Self) []const usize {
-            return self.primes[0..self.prime_count];
-        }
-
-        /// Return the closest prime <= x, or null if none exists
-        pub fn closestPrimeLower(self: *const Self, x: usize) ?usize {
-            if (x < 2) return null;
-            const primes_slice = self.primesSlice();
-            if (primes_slice.len == 0) return null;
-            if (primes_slice[0] > x) return null;
-            if (primes_slice[primes_slice.len - 1] <= x) return primes_slice[primes_slice.len - 1];
-            
-            var low: usize = 0;
-            var high: usize = primes_slice.len - 1;
-            var result: ?usize = null;
-            while (low <= high) {
-                const mid = low + (high - low) / 2;
-                const p = primes_slice[mid];
-                if (p == x) {
-                    return p;
-                } else if (p < x) {
-                    result = p;
-                    low = mid + 1;
-                } else {
-                    high = mid - 1;
-                }
-            }
-            return result;
-        }
-
-        /// Return the closest prime >= x, or null if none exists
-        pub fn closestPrimeUpper(self: *const Self, x: usize) ?usize {
-            if (x > max_n) return null;
-            const primes_slice = self.primesSlice();
-            if (primes_slice.len == 0) return null;
-            if (primes_slice[primes_slice.len - 1] < x) return null;
-            if (primes_slice[0] >= x) return primes_slice[0];
-            
-            var low: usize = 0;
-            var high: usize = primes_slice.len - 1;
-            var result: ?usize = null;
-            while (low <= high) {
-                const mid = low + (high - low) / 2;
-                const p = primes_slice[mid];
-                if (p == x) {
-                    return p;
-                } else if (p > x) {
-                    result = p;
-                    high = mid - 1;
-                } else {
-                    low = mid + 1;
-                }
-            }
-            return result;
-        }
-
-        /// Factorize a number x into its prime factors, returns a slice of Factor
-        /// x must be <= max_n
-        pub fn factorize(self: *Self, x: usize) []const Factor {
-            self.factor_count = 0;
-            var n = x;
-
-            for (self.primesSlice()) |p| {
-                if (p * p > n) break;
-                if (n % p == 0) {
-                    var exp: usize = 0;
-                    while (n % p == 0) {
-                        exp += 1;
-                        n /= p;
-                    }
-                    self.factors[self.factor_count] = Factor{ .prime = p, .exponent = exp };
-                    self.factor_count += 1;
-                }
-            }
-
-            if (n > 1) {
-                self.factors[self.factor_count] = Factor{ .prime = n, .exponent = 1 };
-                self.factor_count += 1;
-            }
-
-            return self.factors[0..self.factor_count];
-        }
-    };
-}
-
-};
 
 const BUNDLE = false;
 
 // ===================== Solving =====================
 
-const Modint = fps.Modint998244353;
+const Mint = fps.Modint998244353;
 const FPS = fps.Fps998244353;
-const Combinatorics = combinatorics.CombinatoricModint(Modint);
+
+// In-place multiplication by 1 / (1 - x^k)
+// mul 1 + x^k + x^2k + x^3k + ... is the same as prefix sum at step k
+fn addCoin(cur: []Mint, k: usize, n: usize) void {
+    var j: usize = k;
+    while (j <= n) : (j += 1) {
+        cur[j] = cur[j].add(cur[j - k]);
+    }
+}
+
+// In-place multiplication by (1 - x^k)
+// reverse the prefix sum
+fn removeCoin(cur: []Mint, k: usize, n: usize) void {
+    var j: usize = n;
+    while (j >= k) : (j -= 1) {
+        cur[j] = cur[j].sub(cur[j - k]);
+    }
+}
 
 pub fn solve() !void {
     defer _ = allocator.arena.reset(.retain_capacity);
     const gpa = allocator.arena.allocator();
 
     const n = in.read(u32);
+    const m = in.read(u32);
+    const l = in.read(u32);
 
-    const pr = prime.PrimeDS(250_000).init();
+    // Single DP array of size N + 1
+    var cur = try gpa.alloc(Mint, n + 1);
+    @memset(cur, Mint.fromInt(0));
+    cur[0] = Mint.fromInt(1);
 
-    const comb = try Combinatorics.init(gpa, n + 1);
-
-    // construct egf of prime.
-    var g = try FPS.init(gpa, n);
-    g.coeffs[0] = Modint.fromInt(1);
-    var i: usize = 0;
-    while (i < pr.prime_count and pr.primes[i] <= n) : (i += 1) {
-        const p = pr.primes[i];
-        g.coeffs[p] = comb.inv_fact[p]; // x^p / p!
+    // Build initial window: coins [1 .. L]
+    for (1..l + 1) |k| {
+        addCoin(cur, k, n);
     }
+    print("{}\n", .{cur[n].toInt()});
 
-    // Since R = x * phi(R), apply Lagrange inversion
-    try g.pow(n, n);
-    var ans = g.coeffs[n - 1];
-    ans = ans.mul(comb.fact[n - 1]);
-    ans = ans.mul(Modint.fromInt(n).inv()); // (n - 1)! / n: fix the root label to 1
-
-    print("{}\n", .{ans.toInt()});
+    // Slide window [i .. i + L - 1] for i = 2 .. M - L + 1
+    for (2..m - l + 2) |i| {
+        removeCoin(cur, i - 1, n); // Remove coin (i - 1)
+        addCoin(cur, i + l - 1, n); // Add coin (i + L - 1)
+        print("{}\n", .{cur[n].toInt()});
+    }
 }
 
 pub fn main() !void {

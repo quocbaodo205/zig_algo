@@ -671,6 +671,25 @@ fn FpsImpl(comptime ModintType: type, comptime use_ntt: bool, comptime fps_root:
     };
 }
 
+// Special trick for 1 / (1 - x^k) FPS: mul / div is + / - prefix sum style.
+// In-place multiplication by 1 / (1 - x^k)
+// mul 1 + x^k + x^2k + x^3k + ... is the same as prefix sum at step k
+// fn addCoin(cur: []Modint998244353, k: usize, n: usize) void {
+//     var j: usize = k;
+//     while (j <= n) : (j += 1) {
+//         cur[j] = cur[j].add(cur[j - k]);
+//     }
+// }
+
+// In-place multiplication by (1 - x^k)
+// reverse the prefix sum
+// fn removeCoin(cur: []Modint998244353, k: usize, n: usize) void {
+//     var j: usize = n;
+//     while (j >= k) : (j -= 1) {
+//         cur[j] = cur[j].sub(cur[j - k]);
+//     }
+// }
+
 /// Formal Power Series (Polynomial) modulo `comptime MOD` using NTT (requires ROOT: primitive root of MOD)
 pub fn FpsNtt(comptime ModintType: type, comptime fps_root: comptime_int) type {
     return FpsImpl(ModintType, true, fps_root);

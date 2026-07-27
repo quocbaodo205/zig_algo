@@ -1,43 +1,57 @@
 const std = @import("std");
 const allocator = @import("allocator.zig");
-const combinatorics = @import("combinatorics.zig");
 const fps = @import("fps.zig");
-const prime = @import("prime.zig");
 
-const BUNDLE = true;
+const BUNDLE = false;
 
 // ===================== Solving =====================
 
-const Modint = fps.Modint998244353;
+const Mint = fps.Modint998244353;
 const FPS = fps.Fps998244353;
-const Combinatorics = combinatorics.CombinatoricModint(Modint);
+
+// In-place multiplication by 1 / (1 - x^k)
+// mul 1 + x^k + x^2k + x^3k + ... is the same as prefix sum at step k
+fn addCoin(cur: []Mint, k: usize, n: usize) void {
+    var j: usize = k;
+    while (j <= n) : (j += 1) {
+        cur[j] = cur[j].add(cur[j - k]);
+    }
+}
+
+// In-place multiplication by (1 - x^k)
+// reverse the prefix sum
+fn removeCoin(cur: []Mint, k: usize, n: usize) void {
+    var j: usize = n;
+    while (j >= k) : (j -= 1) {
+        cur[j] = cur[j].sub(cur[j - k]);
+    }
+}
 
 pub fn solve() !void {
     defer _ = allocator.arena.reset(.retain_capacity);
     const gpa = allocator.arena.allocator();
 
     const n = in.read(u32);
+    const m = in.read(u32);
+    const l = in.read(u32);
 
-    const pr = prime.PrimeDS(250_000).init();
+    // Single DP array of size N + 1
+    var cur = try gpa.alloc(Mint, n + 1);
+    @memset(cur, Mint.fromInt(0));
+    cur[0] = Mint.fromInt(1);
 
-    const comb = try Combinatorics.init(gpa, n + 1);
-
-    // construct egf of prime.
-    var g = try FPS.init(gpa, n);
-    g.coeffs[0] = Modint.fromInt(1);
-    var i: usize = 0;
-    while (i < pr.prime_count and pr.primes[i] <= n) : (i += 1) {
-        const p = pr.primes[i];
-        g.coeffs[p] = comb.inv_fact[p]; // x^p / p!
+    // Build initial window: coins [1 .. L]
+    for (1..l + 1) |k| {
+        addCoin(cur, k, n);
     }
+    print("{}\n", .{cur[n].toInt()});
 
-    // Since R = x * phi(R), apply Lagrange inversion
-    try g.pow(n, n);
-    var ans = g.coeffs[n - 1];
-    ans = ans.mul(comb.fact[n - 1]);
-    ans = ans.mul(Modint.fromInt(n).inv()); // (n - 1)! / n: fix the root label to 1
-
-    print("{}\n", .{ans.toInt()});
+    // Slide window [i .. i + L - 1] for i = 2 .. M - L + 1
+    for (2..m - l + 2) |i| {
+        removeCoin(cur, i - 1, n); // Remove coin (i - 1)
+        addCoin(cur, i + l - 1, n); // Add coin (i + L - 1)
+        print("{}\n", .{cur[n].toInt()});
+    }
 }
 
 pub fn main() !void {
